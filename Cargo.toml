@@ -12,7 +12,7 @@ edition = "2021"
 license = "MIT"
 
 [workspace.dependencies]
-matrix-sdk = { version = "0.16", features = ["e2e-encryption", "sqlite", "markdown"] }
+matrix-sdk = { version = "0.18", features = ["e2e-encryption", "sqlite", "markdown"] }
 uniffi = { version = "0.31" }
 tokio = { version = "1", features = ["full"] }
 thiserror = "2"
