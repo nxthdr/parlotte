@@ -208,12 +208,49 @@ struct ProfileView: View {
 
             verificationSection
 
+            if !appState.ignoredUsers.isEmpty {
+                Divider()
+                    .opacity(0.5)
+
+                ignoredUsersSection
+            }
+
             Spacer(minLength: Spacing.md)
 
             Button("Done") { dismiss() }
                 .keyboardShortcut(.defaultAction)
         }
         .padding(Spacing.xxl)
+    }
+
+    @ViewBuilder
+    private var ignoredUsersSection: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            Text("Ignored Users")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(AppColor.textTertiary)
+                .textCase(.uppercase)
+
+            Text("You won't see messages from these users in any room.")
+                .font(.system(size: 11))
+                .foregroundStyle(AppColor.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ForEach(appState.ignoredUsers.sorted(), id: \.self) { userId in
+                HStack {
+                    Text(userId)
+                        .font(.messageBody)
+                        .textSelection(.enabled)
+
+                    Spacer()
+
+                    Button("Unignore") {
+                        Task { await appState.unignoreUser(userId: userId) }
+                    }
+                    .font(.system(size: 12, weight: .medium))
+                }
+            }
+        }
     }
 
     @ViewBuilder

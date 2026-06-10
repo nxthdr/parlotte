@@ -1089,4 +1089,28 @@ mod tests {
         client.sync_once().unwrap();
         assert_eq!(client.recovery_state(), RecoveryState::Disabled);
     }
+
+    // -- Test: Ignore and unignore a user --
+
+    #[test]
+    fn ignore_and_unignore_user_roundtrip() {
+        require_synapse();
+        let (alice, _alice_id) = register_and_login("ignore_alice");
+        let (_bob, bob_id) = register_and_login("ignore_bob");
+
+        // Fresh account: nobody ignored.
+        assert!(alice.ignored_users().unwrap().is_empty());
+
+        alice.ignore_user(&bob_id).expect("ignore_user failed");
+        alice.sync_once().unwrap();
+        let ignored = alice.ignored_users().unwrap();
+        assert_eq!(ignored, vec![bob_id.clone()]);
+
+        alice.unignore_user(&bob_id).expect("unignore_user failed");
+        alice.sync_once().unwrap();
+        assert!(
+            alice.ignored_users().unwrap().is_empty(),
+            "ignore list should be empty after unignore"
+        );
+    }
 }

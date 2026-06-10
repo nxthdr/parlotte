@@ -45,6 +45,9 @@ public protocol MatrixClientProtocol: Sendable {
     func kickUser(roomId: String, userId: String, reason: String?) async throws
     func banUser(roomId: String, userId: String, reason: String?) async throws
     func unbanUser(roomId: String, userId: String, reason: String?) async throws
+    func ignoreUser(userId: String) async throws
+    func unignoreUser(userId: String) async throws
+    func ignoredUsers() async throws -> [String]
     func startSync(listener: ParlotteSyncListener) throws
     func stopSync()
     var isSyncing: Bool { get }

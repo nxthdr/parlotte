@@ -257,8 +257,8 @@ struct RoomDetailView: View {
 
     private var messageList: some View {
         MessageScrollView(
-            lastItemId: appState.messages.last?.eventId,
-            firstItemId: appState.messages.first?.eventId,
+            lastItemId: appState.visibleMessages.last?.eventId,
+            firstItemId: appState.visibleMessages.first?.eventId,
             onScrollToTop: {
                 if appState.hasMoreMessages && !appState.isLoadingMoreMessages {
                     Task { await appState.loadMoreMessages() }
@@ -295,11 +295,11 @@ struct RoomDetailView: View {
                     .padding(.vertical, Spacing.md)
                 }
 
-                ForEach(Array(appState.messages.enumerated()), id: \.element.eventId) { index, message in
+                ForEach(Array(appState.visibleMessages.enumerated()), id: \.element.eventId) { index, message in
                     if index == 0 {
                         DateSeparator(timestamp: message.timestampMs)
                     } else {
-                        let prevDate = Self.calendarDay(appState.messages[index - 1].timestampMs)
+                        let prevDate = Self.calendarDay(appState.visibleMessages[index - 1].timestampMs)
                         let thisDate = Self.calendarDay(message.timestampMs)
                         if prevDate != thisDate {
                             DateSeparator(timestamp: message.timestampMs)
@@ -308,7 +308,7 @@ struct RoomDetailView: View {
 
                     let isGrouped: Bool = {
                         guard index > 0 else { return false }
-                        let prev = appState.messages[index - 1]
+                        let prev = appState.visibleMessages[index - 1]
                         guard prev.sender == message.sender else { return false }
                         // Group if within 5 minutes
                         let gap = message.timestampMs > prev.timestampMs
@@ -326,7 +326,7 @@ struct RoomDetailView: View {
                         isOwnMessage: message.sender == appState.loggedInUserId,
                         isGrouped: isGrouped,
                         repliedMessage: message.repliedToEventId.flatMap { replyId in
-                            appState.messages.first { $0.eventId == replyId }
+                            appState.visibleMessages.first { $0.eventId == replyId }
                         },
                         onReply: {
                             replyingTo = message
@@ -344,7 +344,7 @@ struct RoomDetailView: View {
                 }
 
                 // Empty conversation state
-                if appState.messages.isEmpty && !appState.hasMoreMessages {
+                if appState.visibleMessages.isEmpty && !appState.hasMoreMessages {
                     VStack(spacing: Spacing.md) {
                         Spacer()
                             .frame(height: 80)

@@ -754,6 +754,18 @@ impl ParlotteClientFFI {
         Ok(self.inner.remove_avatar()?)
     }
 
+    pub fn ignore_user(&self, user_id: String) -> Result<(), ParlotteError> {
+        Ok(self.inner.ignore_user(&user_id)?)
+    }
+
+    pub fn unignore_user(&self, user_id: String) -> Result<(), ParlotteError> {
+        Ok(self.inner.unignore_user(&user_id)?)
+    }
+
+    pub fn ignored_users(&self) -> Result<Vec<String>, ParlotteError> {
+        Ok(self.inner.ignored_users()?)
+    }
+
     pub fn set_room_name(&self, room_id: String, name: String) -> Result<(), ParlotteError> {
         Ok(self.inner.set_room_name(&room_id, &name)?)
     }

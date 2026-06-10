@@ -88,7 +88,7 @@
   - [x] `is_last_device` warning before logout
   - [x] Reset recovery from this device (lost-key path)
 - [ ] Device management (list other sessions, rename, sign out remotely)
-- [ ] Ignore / block users (with timeline filtering)
+- [x] Ignore / block users (`m.ignored_user_list`, member-list action + profile management, timeline filtering)
 - [x] Hardening pass (2026-04)
   - [x] Access + refresh tokens moved from UserDefaults to Keychain (legacy plaintext auto-migrated and wiped)
   - [x] HTML sanitiser on message formatted bodies (blocks `<img>`/`<iframe>`/`<script>`/`<style>`, `on*=` handlers, `javascript:`/`data:` hrefs) — stops arbitrary senders triggering network fetches via NSAttributedString

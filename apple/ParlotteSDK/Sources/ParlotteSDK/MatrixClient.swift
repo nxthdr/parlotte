@@ -302,6 +302,27 @@ public actor MatrixClient {
         }.value
     }
 
+    public func ignoreUser(userId: String) async throws {
+        let ffi = self.ffi
+        try await Task.detached {
+            try ffi.ignoreUser(userId: userId)
+        }.value
+    }
+
+    public func unignoreUser(userId: String) async throws {
+        let ffi = self.ffi
+        try await Task.detached {
+            try ffi.unignoreUser(userId: userId)
+        }.value
+    }
+
+    public func ignoredUsers() async throws -> [String] {
+        let ffi = self.ffi
+        return try await Task.detached {
+            try ffi.ignoredUsers()
+        }.value
+    }
+
     public nonisolated func startSync(listener: ParlotteSyncListener) throws {
         try ffi.startSync(listener: listener)
     }

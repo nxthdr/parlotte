@@ -495,6 +495,77 @@ impl ParlotteClient {
         })
     }
 
+    /// Ignore a user globally (`m.ignored_user_list`). Their events are
+    /// filtered out of sync responses by the server.
+    pub fn ignore_user(&self, user_id: &str) -> Result<()> {
+        let client = self.client();
+        self.runtime.block_on(async {
+            let user_id =
+                matrix_sdk::ruma::UserId::parse(user_id).map_err(|e| ParlotteError::Unknown {
+                    message: format!("invalid user ID: {e}"),
+                })?;
+
+            tracing::debug!(%user_id, "ignoring user");
+            client
+                .account()
+                .ignore_user(&user_id)
+                .await
+                .map_err(|e| ParlotteError::Network {
+                    message: format!("failed to ignore user: {e}"),
+                })
+        })
+    }
+
+    /// Remove a user from the global ignore list.
+    pub fn unignore_user(&self, user_id: &str) -> Result<()> {
+        let client = self.client();
+        self.runtime.block_on(async {
+            let user_id =
+                matrix_sdk::ruma::UserId::parse(user_id).map_err(|e| ParlotteError::Unknown {
+                    message: format!("invalid user ID: {e}"),
+                })?;
+
+            tracing::debug!(%user_id, "unignoring user");
+            client
+                .account()
+                .unignore_user(&user_id)
+                .await
+                .map_err(|e| ParlotteError::Network {
+                    message: format!("failed to unignore user: {e}"),
+                })
+        })
+    }
+
+    /// Get the list of ignored user IDs from `m.ignored_user_list` account data.
+    pub fn ignored_users(&self) -> Result<Vec<String>> {
+        use matrix_sdk::ruma::events::ignored_user_list::IgnoredUserListEventContent;
+
+        let client = self.client();
+        self.runtime.block_on(async {
+            let raw = client
+                .account()
+                .account_data::<IgnoredUserListEventContent>()
+                .await
+                .map_err(|e| ParlotteError::Store {
+                    message: format!("failed to read ignored user list: {e}"),
+                })?;
+
+            let Some(raw) = raw else {
+                return Ok(Vec::new());
+            };
+
+            let content = raw.deserialize().map_err(|e| ParlotteError::Store {
+                message: format!("failed to parse ignored user list: {e}"),
+            })?;
+
+            Ok(content
+                .ignored_users
+                .keys()
+                .map(|user_id| user_id.to_string())
+                .collect())
+        })
+    }
+
     /// Log out and invalidate the current session.
     pub fn logout(&self) -> Result<()> {
         let client = self.client();
@@ -2400,6 +2471,31 @@ mod tests {
         let result = client.unban_user("!room:example.com", "nope", None);
         let err = result.unwrap_err();
         assert!(err.to_string().contains("invalid user ID"));
+    }
+
+    #[test]
+    fn ignore_user_rejects_invalid_user_id() {
+        let client = ParlotteClient::new("http://localhost:1234", None).unwrap();
+        let result = client.ignore_user("not-a-user");
+        let err = result.unwrap_err();
+        assert!(matches!(err, ParlotteError::Unknown { .. }));
+        assert!(err.to_string().contains("invalid user ID"));
+    }
+
+    #[test]
+    fn unignore_user_rejects_invalid_user_id() {
+        let client = ParlotteClient::new("http://localhost:1234", None).unwrap();
+        let result = client.unignore_user("nope");
+        let err = result.unwrap_err();
+        assert!(matches!(err, ParlotteError::Unknown { .. }));
+        assert!(err.to_string().contains("invalid user ID"));
+    }
+
+    #[test]
+    fn ignored_users_empty_before_login() {
+        let client = ParlotteClient::new("http://localhost:1234", None).unwrap();
+        let result = client.ignored_users().unwrap();
+        assert!(result.is_empty());
     }
 
     #[test]

@@ -9,6 +9,7 @@ struct MemberListView: View {
     @State private var isLoading = true
     @State private var pendingKick: RoomMemberInfo?
     @State private var pendingBan: RoomMemberInfo?
+    @State private var pendingIgnore: RoomMemberInfo?
     @State private var actionInFlight = false
 
     let roomId: String
@@ -88,6 +89,22 @@ struct MemberListView: View {
         } message: { _ in
             Text("They cannot rejoin until unbanned.")
         }
+        .confirmationDialog(
+            "Ignore \(pendingIgnore?.displayName ?? pendingIgnore?.userId ?? "user")?",
+            isPresented: Binding(
+                get: { pendingIgnore != nil },
+                set: { if !$0 { pendingIgnore = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pendingIgnore
+        ) { member in
+            Button("Ignore", role: .destructive) {
+                Task { await performIgnore(member) }
+            }
+            Button("Cancel", role: .cancel) { pendingIgnore = nil }
+        } message: { _ in
+            Text("You won't see their messages in any room. You can unignore them later from this menu or your profile.")
+        }
     }
 
     @ViewBuilder
@@ -145,10 +162,23 @@ struct MemberListView: View {
             Button("Ban…", role: .destructive) {
                 pendingBan = member
             }
-        } else if isSelf {
+        }
+
+        if isSelf {
             Text("That's you")
         } else {
-            Text("No actions available")
+            if canModerate {
+                Divider()
+            }
+            if appState.ignoredUsers.contains(member.userId) {
+                Button("Unignore") {
+                    Task { await performUnignore(member) }
+                }
+            } else {
+                Button("Ignore…", role: .destructive) {
+                    pendingIgnore = member
+                }
+            }
         }
     }
 
@@ -171,6 +201,21 @@ struct MemberListView: View {
         await appState.kickMember(userId: member.userId, reason: nil)
         pendingKick = nil
         await loadMembers()
+        actionInFlight = false
+    }
+
+    private func performIgnore(_ member: RoomMemberInfo) async {
+        guard !actionInFlight else { return }
+        actionInFlight = true
+        await appState.ignoreUser(userId: member.userId)
+        pendingIgnore = nil
+        actionInFlight = false
+    }
+
+    private func performUnignore(_ member: RoomMemberInfo) async {
+        guard !actionInFlight else { return }
+        actionInFlight = true
+        await appState.unignoreUser(userId: member.userId)
         actionInFlight = false
     }
 

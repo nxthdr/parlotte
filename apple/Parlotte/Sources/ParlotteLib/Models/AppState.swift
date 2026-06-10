@@ -131,6 +131,19 @@ public final class AppState {
     /// Populated automatically when a room is selected.
     public var memberProfiles: [String: (displayName: String?, avatarUrl: String?)] = [:]
 
+    /// Globally ignored users (`m.ignored_user_list`). Loaded after login,
+    /// refreshed on every sync tick, cleared on logout.
+    public var ignoredUsers: Set<String> = []
+
+    /// Timeline messages with ignored senders filtered out. The raw `messages`
+    /// array keeps them so sync dedup and pagination tokens stay consistent;
+    /// the server stops sending their events going forward, but cached history
+    /// and paginated batches may still contain them.
+    public var visibleMessages: [MessageInfo] {
+        if ignoredUsers.isEmpty { return messages }
+        return messages.filter { !ignoredUsers.contains($0.sender) }
+    }
+
     /// Maps room ID to the list of user IDs currently typing (excluding own user).
     public var typingUsers: [String: [String]] = [:]
 
@@ -235,6 +248,7 @@ public final class AppState {
             isSyncActive = true
             try await client.syncOnce()
             await fetchProfile()
+            await refreshIgnoredUsers()
             await refreshRooms()
             startSyncLoop()
         } catch {
@@ -273,6 +287,7 @@ public final class AppState {
             isSyncActive = true
             try await client.syncOnce()
             await fetchProfile()
+            await refreshIgnoredUsers()
             await refreshRecoveryState()
             if recoveryState == .incomplete {
                 isPromptingRecoveryEntry = true
@@ -304,6 +319,7 @@ public final class AppState {
             isSyncActive = true
             try await client.syncOnce()
             await fetchProfile()
+            await refreshIgnoredUsers()
             await refreshRecoveryState()
             if recoveryState == .incomplete {
                 isPromptingRecoveryEntry = true
@@ -345,6 +361,7 @@ public final class AppState {
             isCheckingSession = false
             try await client.syncOnce()
             await fetchProfile()
+            await refreshIgnoredUsers()
             await refreshRecoveryState()
             if recoveryState == .incomplete {
                 isPromptingRecoveryEntry = true
@@ -379,6 +396,7 @@ public final class AppState {
             isCheckingSession = false
             try await client.syncOnce()
             await fetchProfile()
+            await refreshIgnoredUsers()
             await refreshRecoveryState()
             if recoveryState == .incomplete {
                 isPromptingRecoveryEntry = true
@@ -422,6 +440,9 @@ public final class AppState {
         avatarUrl = nil
         rooms = []
         memberProfiles = [:]
+        ignoredUsers = []
+        pendingIgnored = []
+        pendingUnignored = []
         typingUsers = [:]
         selectedRoomId = nil
         recoveryState = .unknown
@@ -1004,6 +1025,55 @@ public final class AppState {
         }
     }
 
+    /// Ignore a user globally. Optimistically hides their messages; reverts on failure.
+    public func ignoreUser(userId: String) async {
+        guard let client else { return }
+        let inserted = ignoredUsers.insert(userId).inserted
+        do {
+            try await client.ignoreUser(userId: userId)
+            // The local store reflects the change only after the server echoes
+            // it in a sync response; keep it pinned until then so a sync-tick
+            // refresh can't flash the user's messages back.
+            pendingIgnored.insert(userId)
+            pendingUnignored.remove(userId)
+        } catch {
+            if inserted { ignoredUsers.remove(userId) }
+            errorMessage = error.displayMessage
+        }
+    }
+
+    /// Remove a user from the global ignore list. Optimistic; reverts on failure.
+    public func unignoreUser(userId: String) async {
+        guard let client else { return }
+        let removed = ignoredUsers.remove(userId) != nil
+        do {
+            try await client.unignoreUser(userId: userId)
+            pendingUnignored.insert(userId)
+            pendingIgnored.remove(userId)
+        } catch {
+            if removed { ignoredUsers.insert(userId) }
+            errorMessage = error.displayMessage
+        }
+    }
+
+    /// Local ignore/unignore ops confirmed by the server but not yet echoed
+    /// back through sync into the account-data store.
+    private var pendingIgnored: Set<String> = []
+    private var pendingUnignored: Set<String> = []
+
+    /// Reload the ignore list from `m.ignored_user_list` account data,
+    /// overlaying ops the server hasn't echoed back yet.
+    public func refreshIgnoredUsers() async {
+        guard let client else { return }
+        guard let list = try? await client.ignoredUsers() else { return }
+        var server = Set(list)
+        pendingIgnored.subtract(server)
+        pendingUnignored.formIntersection(server)
+        server.formUnion(pendingIgnored)
+        server.subtract(pendingUnignored)
+        ignoredUsers = server
+    }
+
     public func setMemberPowerLevel(userId: String, level: Int64) async {
         guard let client, let roomId = selectedRoomId else { return }
         do {
@@ -1269,6 +1339,7 @@ public final class AppState {
     /// picked up without needing to switch rooms.
     public func handleSyncUpdate() async {
         await refreshVerificationState()
+        await refreshIgnoredUsers()
         await refreshRooms()
         // Always check for new messages when a room is selected.
         // Own messages don't increment unreadCount, so we can't gate on it —

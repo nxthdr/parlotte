@@ -37,6 +37,9 @@ final class MockMatrixClient: MatrixClientProtocol, @unchecked Sendable {
     var kickUserCalls: [(roomId: String, userId: String, reason: String?)] = []
     var banUserCalls: [(roomId: String, userId: String, reason: String?)] = []
     var unbanUserCalls: [(roomId: String, userId: String, reason: String?)] = []
+    var ignoreUserCalls: [String] = []
+    var unignoreUserCalls: [String] = []
+    var ignoredUsersCalls = 0
 
     // MARK: - Configurable behavior
 
@@ -81,6 +84,10 @@ final class MockMatrixClient: MatrixClientProtocol, @unchecked Sendable {
     var kickUserError: Error?
     var banUserError: Error?
     var unbanUserError: Error?
+    var ignoreUserError: Error?
+    var unignoreUserError: Error?
+    var ignoredUsersError: Error?
+    var ignoredUsersResult: [String] = []
 
     // Recovery
     var recoveryStateResult: RecoveryState = .disabled
@@ -235,6 +242,22 @@ final class MockMatrixClient: MatrixClientProtocol, @unchecked Sendable {
     func unbanUser(roomId: String, userId: String, reason: String?) async throws {
         try errorFor(unbanUserError)
         unbanUserCalls.append((roomId, userId, reason))
+    }
+
+    func ignoreUser(userId: String) async throws {
+        try errorFor(ignoreUserError)
+        ignoreUserCalls.append(userId)
+    }
+
+    func unignoreUser(userId: String) async throws {
+        try errorFor(unignoreUserError)
+        unignoreUserCalls.append(userId)
+    }
+
+    func ignoredUsers() async throws -> [String] {
+        try errorFor(ignoredUsersError)
+        ignoredUsersCalls += 1
+        return ignoredUsersResult
     }
 
     // MARK: - Stubs (not needed for state management tests)
