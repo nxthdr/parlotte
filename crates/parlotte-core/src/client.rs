@@ -1181,9 +1181,10 @@ impl ParlotteClient {
                     message: format!("room {room_id} not found"),
                 })?;
 
-            let level = matrix_sdk::ruma::Int::try_from(level).map_err(|e| ParlotteError::Room {
-                message: format!("power level out of range: {e}"),
-            })?;
+            let level =
+                matrix_sdk::ruma::Int::try_from(level).map_err(|e| ParlotteError::Room {
+                    message: format!("power level out of range: {e}"),
+                })?;
 
             tracing::debug!(%user_id, %room_id, %level, "setting user power level");
             room.update_power_levels(vec![(user_id.as_ref(), level)])
@@ -1197,12 +1198,7 @@ impl ParlotteClient {
     }
 
     /// Kick a user from a room. Reason is optional and shown to the kicked user.
-    pub fn kick_user(
-        &self,
-        room_id: &str,
-        user_id: &str,
-        reason: Option<String>,
-    ) -> Result<()> {
+    pub fn kick_user(&self, room_id: &str, user_id: &str, reason: Option<String>) -> Result<()> {
         let client = self.client();
         self.runtime.block_on(async {
             let room_id = <&RoomId>::try_from(room_id).map_err(|e| ParlotteError::Room {
@@ -1232,12 +1228,7 @@ impl ParlotteClient {
     }
 
     /// Ban a user from a room. Reason is optional.
-    pub fn ban_user(
-        &self,
-        room_id: &str,
-        user_id: &str,
-        reason: Option<String>,
-    ) -> Result<()> {
+    pub fn ban_user(&self, room_id: &str, user_id: &str, reason: Option<String>) -> Result<()> {
         let client = self.client();
         self.runtime.block_on(async {
             let room_id = <&RoomId>::try_from(room_id).map_err(|e| ParlotteError::Room {
@@ -1267,12 +1258,7 @@ impl ParlotteClient {
     }
 
     /// Unban a previously-banned user.
-    pub fn unban_user(
-        &self,
-        room_id: &str,
-        user_id: &str,
-        reason: Option<String>,
-    ) -> Result<()> {
+    pub fn unban_user(&self, room_id: &str, user_id: &str, reason: Option<String>) -> Result<()> {
         let client = self.client();
         self.runtime.block_on(async {
             let room_id = <&RoomId>::try_from(room_id).map_err(|e| ParlotteError::Room {
