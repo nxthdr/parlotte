@@ -20,7 +20,7 @@ parlotte/
 
 ### Core (`parlotte-core`)
 
-The core is the heart of parlotte. It wraps `matrix-sdk` (v0.16) behind a clean, platform-agnostic API. Every platform UI consumes only this API — no platform-specific code touches the Matrix SDK directly.
+The core is the heart of parlotte. It wraps `matrix-sdk` (v0.18) behind a clean, platform-agnostic API. Every platform UI consumes only this API — no platform-specific code touches the Matrix SDK directly.
 
 Key type: `ParlotteClient` — owns a `matrix_sdk::Client` and a `tokio::Runtime`. All public methods are synchronous (using `runtime.block_on()`), making them trivial to call from any FFI boundary.
 
@@ -140,7 +140,7 @@ corresponding roadmap update create drift between intent and reality.
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Matrix SDK | `matrix-sdk` 0.16 | Official Rust SDK, actively maintained, used by Element X |
+| Matrix SDK | `matrix-sdk` 0.18 | Official Rust SDK, actively maintained, used by Element X |
 | Sync strategy | Standard `/sync` | Simpler starting point; migrate to Sliding Sync later for perf |
 | FFI | UniFFI proc-macros | No UDL duplication, native async support, maintained by Mozilla |
 | Storage | SQLite via `matrix-sdk-sqlite` | Persistent, performant, works on all platforms |
