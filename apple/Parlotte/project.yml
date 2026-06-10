@@ -79,6 +79,11 @@ targets:
         CFBundlePackageType: APPL
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
         NSHighResolutionCapable: true
+        # The app ships non-exempt encryption (Olm/Megolm E2EE via
+        # matrix-sdk-crypto), so export compliance must be declared.
+        # Requires an annual BIS self-classification report
+        # (https://www.bis.doc.gov, ENC §740.17(b)(3) mass-market).
+        ITSAppUsesNonExemptEncryption: true
         # Allow loopback / .local HTTP so developers can run against a local
         # Synapse without disabling ATS globally. Remote homeservers are
         # expected to use HTTPS.
