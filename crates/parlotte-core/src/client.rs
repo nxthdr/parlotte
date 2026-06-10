@@ -2,7 +2,7 @@ use matrix_sdk::authentication::matrix::MatrixSession;
 use matrix_sdk::authentication::oauth::registration::{
     ApplicationType, ClientMetadata, Localized, OAuthGrantType,
 };
-use matrix_sdk::authentication::oauth::{ClientId, OAuthSession, UrlOrQuery, UserSession};
+use matrix_sdk::authentication::oauth::{ClientId, OAuthSession, UserSession};
 use matrix_sdk::encryption::recovery::IdentityResetHandle;
 use matrix_sdk::encryption::CrossSigningResetAuthType;
 use matrix_sdk::room::MessagesOptions;
@@ -11,6 +11,7 @@ use matrix_sdk::ruma::events::AnySyncTimelineEvent;
 use matrix_sdk::ruma::serde::Raw;
 use matrix_sdk::ruma::{OwnedRoomId, RoomId};
 use matrix_sdk::store::RoomLoadSettings;
+use matrix_sdk::utils::UrlOrQuery;
 use matrix_sdk::{Client, SessionMeta, SessionTokens};
 use std::sync::Arc;
 
@@ -151,7 +152,7 @@ impl ParlotteClient {
 
             client
                 .matrix_auth()
-                .login_with_sso_callback(url)
+                .login_with_sso_callback(UrlOrQuery::Url(url))
                 .map_err(|e| ParlotteError::Auth {
                     message: format!("SSO callback failed: {e}"),
                 })?
@@ -370,9 +371,10 @@ impl ParlotteClient {
                             );
                         }
                     }
-                    matrix_sdk::SessionChange::UnknownToken { soft_logout } => {
-                        listener
-                            .on_session_change(SessionChangeEvent::UnknownToken { soft_logout });
+                    matrix_sdk::SessionChange::UnknownToken(data) => {
+                        listener.on_session_change(SessionChangeEvent::UnknownToken {
+                            soft_logout: data.soft_logout,
+                        });
                     }
                 }
             }
@@ -615,7 +617,9 @@ impl ParlotteClient {
     /// Send a reply to a specific message in a room.
     pub fn send_reply(&self, room_id: &str, event_id: &str, body: &str) -> Result<()> {
         use matrix_sdk::room::reply::{EnforceThread, Reply};
-        use matrix_sdk::ruma::events::room::message::RoomMessageEventContentWithoutRelation;
+        use matrix_sdk::ruma::events::room::message::{
+            AddMentions, RoomMessageEventContentWithoutRelation,
+        };
         use matrix_sdk::ruma::EventId;
 
         let client = self.client();
@@ -641,6 +645,7 @@ impl ParlotteClient {
                     Reply {
                         event_id: event_id.to_owned(),
                         enforce_thread: EnforceThread::Unthreaded,
+                        add_mentions: AddMentions::Yes,
                     },
                 )
                 .await
@@ -740,8 +745,8 @@ impl ParlotteClient {
                     }
 
                     let replied_to_event_id = match &original.content.relates_to {
-                        Some(Relation::Reply { in_reply_to }) => {
-                            Some(in_reply_to.event_id.to_string())
+                        Some(Relation::Reply(reply)) => {
+                            Some(reply.in_reply_to.event_id.to_string())
                         }
                         _ => None,
                     };
@@ -895,7 +900,7 @@ impl ParlotteClient {
                 message: format!("failed to send reaction: {e}"),
             })?;
 
-            Ok(response.event_id.to_string())
+            Ok(response.response.event_id.to_string())
         })
     }
 
