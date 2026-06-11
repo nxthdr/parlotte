@@ -25,8 +25,8 @@ settings:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "0.1.0"
     # Build number — must increase for every TestFlight/App Store upload of the
-    # same marketing version. 4 = crash fix + direct messages + user search.
-    CURRENT_PROJECT_VERSION: "4"
+    # same marketing version. 5 = data-protection keychain + recovery re-fetch.
+    CURRENT_PROJECT_VERSION: "5"
     CODE_SIGN_STYLE: Automatic
     ENABLE_HARDENED_RUNTIME: YES
 
