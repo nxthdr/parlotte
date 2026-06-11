@@ -1428,6 +1428,15 @@ public final class AppState {
         do {
             try await client.recover(recoveryKey: recoveryKey)
             recoveryState = await client.recoveryState()
+            isPromptingRecoveryEntry = false
+            // Recovery imports the backup decryption key; the room (megolm)
+            // keys then download from the server-side key backup. Sync and
+            // re-fetch so messages that were "Unable to decrypt" pick up the
+            // newly-available keys and re-render. (Keys can keep arriving in
+            // the background, so later sync ticks continue to heal the rest.)
+            try? await client.syncOnce()
+            await refreshRooms()
+            await refreshMessages()
         } catch {
             recoveryErrorMessage = error.displayMessage
         }
