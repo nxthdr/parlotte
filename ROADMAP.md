@@ -136,4 +136,7 @@
 - [x] Mac App Store distribution profile and code signing (automatic signing via `scripts/archive.sh`)
 - [x] Notarization and hardened runtime (hardened runtime enabled; notarization handled server-side on App Store submission)
 - [x] Sandbox entitlements audit (network client/server + user-selected files, see `Resources/Parlotte.entitlements`)
-- [ ] First TestFlight build uploaded and verified by internal testers
+- [x] Universal (arm64 + x86_64) build via `scripts/build-apple.sh`; archive + signed `.pkg` export validated end-to-end
+- [x] Export compliance declared (`ITSAppUsesNonExemptEncryption = false`; exemption basis in `COMPLIANCE.md`)
+- [x] First TestFlight build uploaded and verified by internal testers
+- [ ] App Store product page complete + submitted for review (demo Matrix account in App Review notes)
