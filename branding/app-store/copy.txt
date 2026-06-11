@@ -18,7 +18,7 @@ Fast, native Matrix client
 --------------------------------------------------------------------------------
 PROMOTIONAL TEXT (max 170 chars — editable anytime, no review needed)
 --------------------------------------------------------------------------------
-A fast, native Matrix client for macOS. End-to-end encrypted by default. Designed for people who love great software.
+A fast, native Matrix client for macOS. End-to-end encrypted by default.
 
 --------------------------------------------------------------------------------
 DESCRIPTION (max 4000 chars)
