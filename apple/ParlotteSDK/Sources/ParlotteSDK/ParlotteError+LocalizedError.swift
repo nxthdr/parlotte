@@ -21,4 +21,15 @@ public extension Error {
         }
         return localizedDescription
     }
+
+    /// True when the error indicates the credentials themselves are bad
+    /// (expired/invalid token), as opposed to a transient network/sync
+    /// failure. Callers use this to decide whether a failed session restore
+    /// should discard the saved session or be retried later.
+    var isAuthError: Bool {
+        if let ffi = self as? ParlotteError, case .Auth = ffi {
+            return true
+        }
+        return false
+    }
 }

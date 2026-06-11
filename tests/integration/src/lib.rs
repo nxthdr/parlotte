@@ -472,6 +472,88 @@ mod tests {
         assert!(edited.is_edited, "Message should be marked as edited");
     }
 
+    // -- Test: A cross-sender edit must not rewrite another user's message --
+
+    #[test]
+    fn edit_from_other_user_is_ignored() {
+        require_synapse();
+        let (alice, _alice_id) = register_and_login("spoof_alice");
+        let (bob, bob_id) = register_and_login("spoof_bob");
+
+        let room_id = alice.create_room("Spoof Test", true).unwrap();
+        alice.sync_once().unwrap();
+        alice.invite_user(&room_id, &bob_id).unwrap();
+        alice.sync_once().unwrap();
+        bob.sync_once().unwrap();
+        bob.join_room(&room_id).unwrap();
+        bob.sync_once().unwrap();
+
+        alice.send_message(&room_id, "Alice's message").unwrap();
+        alice.sync_once().unwrap();
+        bob.sync_once().unwrap();
+
+        // Bob locates Alice's event. Our own edit_message refuses to edit
+        // another user's event, so simulate a malicious client by sending a
+        // raw m.replace authored by Bob that targets Alice's event over the
+        // Matrix client API directly.
+        let msgs = bob.messages(&room_id, 50, None).unwrap().messages;
+        let target = msgs
+            .iter()
+            .find(|m| m.body == "Alice's message")
+            .expect("bob should see alice's message");
+        let bob_token = bob.session().expect("bob session").access_token;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let http = reqwest::Client::new();
+            let url = format!(
+                "{HOMESERVER_URL}/_matrix/client/v3/rooms/{room_id}/send/m.room.message/spoof_txn_1"
+            );
+            let resp = http
+                .put(&url)
+                .bearer_auth(&bob_token)
+                .json(&serde_json::json!({
+                    "msgtype": "m.text",
+                    "body": "* Bob's spoofed edit",
+                    "m.new_content": {
+                        "msgtype": "m.text",
+                        "body": "Bob's spoofed edit"
+                    },
+                    "m.relates_to": {
+                        "rel_type": "m.replace",
+                        "event_id": target.event_id
+                    }
+                }))
+                .send()
+                .await
+                .expect("send raw replace");
+            assert!(
+                resp.status().is_success(),
+                "raw m.replace send failed: {}",
+                resp.text().await.unwrap_or_default()
+            );
+        });
+        drop(rt);
+
+        alice.sync_once().unwrap();
+
+        // Alice's client must still show the original text, unedited — the
+        // cross-sender replacement must be rejected at aggregation time.
+        let msgs = alice.messages(&room_id, 50, None).unwrap().messages;
+        let original = msgs
+            .iter()
+            .find(|m| m.event_id == target.event_id)
+            .expect("alice's event should still be present");
+        assert_eq!(
+            original.body, "Alice's message",
+            "cross-sender edit must not rewrite the message"
+        );
+        assert!(
+            !original.is_edited,
+            "cross-sender edit must not flag the message as edited"
+        );
+    }
+
     // -- Test: Message deletion (redaction) --
 
     #[test]
@@ -779,6 +861,161 @@ mod tests {
             found_typing,
             "Bob should have received a typing update showing Alice is typing"
         );
+    }
+
+    // -- Test: Persistent sync loop start -> callback -> stop --
+
+    #[test]
+    fn persistent_sync_loop_lifecycle() {
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+        require_synapse();
+        let (alice, _alice_id) = register_and_login("syncloop_alice");
+        let (bob, bob_id) = register_and_login("syncloop_bob");
+
+        let room_id = alice.create_room("Sync Loop", false).unwrap();
+        alice.sync_once().unwrap();
+        alice.invite_user(&room_id, &bob_id).unwrap();
+        bob.sync_once().unwrap();
+        bob.join_room(&room_id).unwrap();
+        bob.sync_once().unwrap();
+
+        struct CountingListener {
+            updates: Arc<AtomicU32>,
+            stopped: Arc<AtomicBool>,
+            stopped_error: Arc<std::sync::Mutex<Option<String>>>,
+        }
+        impl parlotte_core::SyncListener for CountingListener {
+            fn on_sync_update(&self) {
+                self.updates.fetch_add(1, Ordering::SeqCst);
+            }
+            fn on_sync_stopped(&self, error: Option<String>) {
+                *self.stopped_error.lock().unwrap() = error;
+                self.stopped.store(true, Ordering::SeqCst);
+            }
+        }
+        use std::sync::Arc;
+
+        let updates = Arc::new(AtomicU32::new(0));
+        let stopped = Arc::new(AtomicBool::new(false));
+        let stopped_error = Arc::new(std::sync::Mutex::new(None));
+        let listener = Arc::new(CountingListener {
+            updates: updates.clone(),
+            stopped: stopped.clone(),
+            stopped_error: stopped_error.clone(),
+        });
+
+        bob.start_sync(listener).unwrap();
+        assert!(bob.is_syncing(), "is_syncing should be true after start");
+
+        // Drive at least one sync response: Alice sends a message.
+        alice.send_message(&room_id, "wake up bob").unwrap();
+
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(10) {
+            if updates.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        assert!(
+            updates.load(Ordering::SeqCst) > 0,
+            "on_sync_update should have fired at least once"
+        );
+
+        bob.stop_sync();
+
+        // After a clean stop the loop must report stopped with no error and
+        // is_syncing must be false; no further updates should accumulate.
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(5) {
+            if stopped.load(Ordering::SeqCst) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(!bob.is_syncing(), "is_syncing should be false after stop");
+        assert!(
+            stopped.load(Ordering::SeqCst),
+            "on_sync_stopped should fire on a clean stop"
+        );
+        assert!(
+            stopped_error.lock().unwrap().is_none(),
+            "a clean stop must report no error"
+        );
+
+        let after_stop = updates.load(Ordering::SeqCst);
+        alice.send_message(&room_id, "are you there").unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        assert_eq!(
+            updates.load(Ordering::SeqCst),
+            after_stop,
+            "no sync updates should fire after stop"
+        );
+    }
+
+    // -- Test: Restarting sync does not leave a second loop running --
+
+    #[test]
+    fn restart_sync_does_not_duplicate_loop() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+
+        require_synapse();
+        let (alice, _alice_id) = register_and_login("syncrestart_alice");
+        let (bob, bob_id) = register_and_login("syncrestart_bob");
+
+        let room_id = alice.create_room("Restart", false).unwrap();
+        alice.sync_once().unwrap();
+        alice.invite_user(&room_id, &bob_id).unwrap();
+        bob.sync_once().unwrap();
+        bob.join_room(&room_id).unwrap();
+        bob.sync_once().unwrap();
+
+        struct CountingListener {
+            updates: Arc<AtomicU32>,
+        }
+        impl parlotte_core::SyncListener for CountingListener {
+            fn on_sync_update(&self) {
+                self.updates.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        // First generation, then immediately restart (the logout/login shape
+        // that previously spawned a second concurrent loop).
+        let first = Arc::new(AtomicU32::new(0));
+        bob.start_sync(Arc::new(CountingListener {
+            updates: first.clone(),
+        }))
+        .unwrap();
+
+        let second = Arc::new(AtomicU32::new(0));
+        bob.start_sync(Arc::new(CountingListener {
+            updates: second.clone(),
+        }))
+        .unwrap();
+
+        // Let the surviving loop settle, then drive a single message.
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let first_baseline = first.load(Ordering::SeqCst);
+        alice.send_message(&room_id, "single delivery").unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(3));
+
+        // The first generation must be dead: its counter must not advance
+        // after the restart. If the old race were present it would keep
+        // ticking alongside the new loop.
+        assert_eq!(
+            first.load(Ordering::SeqCst),
+            first_baseline,
+            "the replaced sync loop must stop ticking after restart"
+        );
+        assert!(
+            second.load(Ordering::SeqCst) > 0,
+            "the current sync loop should be delivering updates"
+        );
+
+        bob.stop_sync();
+        assert!(!bob.is_syncing());
     }
 
     // -- Test: Attachment upload + download round-trip --

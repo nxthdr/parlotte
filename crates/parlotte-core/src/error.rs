@@ -22,23 +22,11 @@ pub enum ParlotteError {
     Unknown { message: String },
 }
 
-impl From<matrix_sdk::Error> for ParlotteError {
-    fn from(err: matrix_sdk::Error) -> Self {
-        let msg = err.to_string();
-        match &err {
-            matrix_sdk::Error::Http(_) => ParlotteError::Network { message: msg },
-            _ => ParlotteError::Unknown { message: msg },
-        }
-    }
-}
-
-impl From<matrix_sdk::HttpError> for ParlotteError {
-    fn from(err: matrix_sdk::HttpError) -> Self {
-        ParlotteError::Network {
-            message: err.to_string(),
-        }
-    }
-}
+// NOTE: there are deliberately no `From<matrix_sdk::Error>` impls. Every call
+// site maps SDK errors explicitly with `.map_err(...)` to attach a contextual
+// message, so a blanket `?` conversion would only hide where an error came
+// from. Earlier blanket impls existed but were never used (no `?` relied on
+// them) and went untested — removed rather than left as dead code.
 
 pub type Result<T> = std::result::Result<T, ParlotteError>;
 

@@ -443,6 +443,9 @@ impl parlotte_core::VerificationListener for VerificationListenerBridge {
 pub trait ParlotteSyncListener: Send + Sync {
     fn on_sync_update(&self);
     fn on_typing_update(&self, room_id: String, user_ids: Vec<String>);
+    /// Called when the sync loop has stopped. `error` is `None` for a clean
+    /// stop and `Some(message)` if it gave up after repeated failures.
+    fn on_sync_stopped(&self, error: Option<String>);
 }
 
 /// Bridge from the FFI callback to the core SyncListener trait.
@@ -457,6 +460,10 @@ impl parlotte_core::SyncListener for SyncListenerBridge {
 
     fn on_typing_update(&self, room_id: String, user_ids: Vec<String>) {
         self.inner.on_typing_update(room_id, user_ids);
+    }
+
+    fn on_sync_stopped(&self, error: Option<String>) {
+        self.inner.on_sync_stopped(error);
     }
 }
 
@@ -538,7 +545,7 @@ impl ParlotteClientFFI {
         Ok(self.inner.rooms()?.into_iter().map(Into::into).collect())
     }
 
-    pub fn send_message(&self, room_id: String, body: String) -> Result<(), ParlotteError> {
+    pub fn send_message(&self, room_id: String, body: String) -> Result<String, ParlotteError> {
         Ok(self.inner.send_message(&room_id, &body)?)
     }
 
@@ -547,7 +554,7 @@ impl ParlotteClientFFI {
         room_id: String,
         event_id: String,
         body: String,
-    ) -> Result<(), ParlotteError> {
+    ) -> Result<String, ParlotteError> {
         Ok(self.inner.send_reply(&room_id, &event_id, &body)?)
     }
 
@@ -661,7 +668,7 @@ impl ParlotteClientFFI {
         data: Vec<u8>,
         width: Option<u32>,
         height: Option<u32>,
-    ) -> Result<(), ParlotteError> {
+    ) -> Result<String, ParlotteError> {
         Ok(self
             .inner
             .send_attachment(&room_id, &filename, &mime_type, data, width, height)?)
@@ -1353,5 +1360,107 @@ mod tests {
             ffi.to_string(),
             "authentication failed: invalid credentials for @user:matrix.org"
         );
+    }
+
+    // -- OidcSessionData round-trip (carries access + refresh tokens) --
+
+    #[test]
+    fn oidc_session_data_round_trips_both_directions() {
+        let core = CoreOidcSessionData {
+            user_id: "@me:x.com".into(),
+            device_id: "DEV".into(),
+            access_token: "access-abc".into(),
+            refresh_token: Some("refresh-xyz".into()),
+            client_id: "client-123".into(),
+        };
+        let ffi: OidcSessionData = core.clone().into();
+        assert_eq!(ffi.user_id, "@me:x.com");
+        assert_eq!(ffi.device_id, "DEV");
+        assert_eq!(ffi.access_token, "access-abc");
+        assert_eq!(ffi.refresh_token.as_deref(), Some("refresh-xyz"));
+        assert_eq!(ffi.client_id, "client-123");
+
+        // Round-trip back to core: a field swap here would corrupt persisted
+        // sessions, so assert every field survives both directions.
+        let back: CoreOidcSessionData = ffi.into();
+        assert_eq!(back.user_id, core.user_id);
+        assert_eq!(back.device_id, core.device_id);
+        assert_eq!(back.access_token, core.access_token);
+        assert_eq!(back.refresh_token, core.refresh_token);
+        assert_eq!(back.client_id, core.client_id);
+    }
+
+    #[test]
+    fn oidc_session_data_handles_no_refresh_token() {
+        let core = CoreOidcSessionData {
+            user_id: "@me:x.com".into(),
+            device_id: "DEV".into(),
+            access_token: "a".into(),
+            refresh_token: None,
+            client_id: "c".into(),
+        };
+        let ffi: OidcSessionData = core.into();
+        assert_eq!(ffi.refresh_token, None);
+    }
+
+    // -- Verification conversions --
+
+    #[test]
+    fn verification_request_info_converts() {
+        let core = CoreVerificationRequestInfo {
+            flow_id: "flow-1".into(),
+            other_user_id: "@other:x.com".into(),
+            is_self_verification: true,
+            we_started: false,
+        };
+        let ffi: VerificationRequestInfo = core.into();
+        assert_eq!(ffi.flow_id, "flow-1");
+        assert_eq!(ffi.other_user_id, "@other:x.com");
+        assert!(ffi.is_self_verification);
+        assert!(!ffi.we_started);
+    }
+
+    #[test]
+    fn verification_state_maps_emoji_vector_in_order() {
+        let core = CoreVerificationState::SasReadyToCompare {
+            emojis: vec![
+                CoreEmojiInfo {
+                    symbol: "🐶".into(),
+                    description: "Dog".into(),
+                },
+                CoreEmojiInfo {
+                    symbol: "🐱".into(),
+                    description: "Cat".into(),
+                },
+            ],
+        };
+        let ffi: VerificationState = core.into();
+        match ffi {
+            VerificationState::SasReadyToCompare { emojis } => {
+                assert_eq!(emojis.len(), 2);
+                assert_eq!(emojis[0].symbol, "🐶");
+                assert_eq!(emojis[0].description, "Dog");
+                assert_eq!(emojis[1].symbol, "🐱");
+            }
+            other => panic!("expected SasReadyToCompare, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verification_state_maps_simple_variants() {
+        assert!(matches!(
+            VerificationState::from(CoreVerificationState::Pending),
+            VerificationState::Pending
+        ));
+        assert!(matches!(
+            VerificationState::from(CoreVerificationState::Done),
+            VerificationState::Done
+        ));
+        match VerificationState::from(CoreVerificationState::Cancelled {
+            reason: "user rejected".into(),
+        }) {
+            VerificationState::Cancelled { reason } => assert_eq!(reason, "user rejected"),
+            other => panic!("expected Cancelled, got {other:?}"),
+        }
     }
 }

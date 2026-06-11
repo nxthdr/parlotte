@@ -231,11 +231,15 @@ struct AppStateTests {
 
     // MARK: - Append New Messages (sync handler)
 
-    @Test("Append new messages replaces optimistic placeholders")
+    @Test("Append new messages replaces a sent message's placeholder with its echo")
     mutating func appendNewMessagesReplacesOptimisticPlaceholders() async {
-        appState.messages = [
-            makeMessage(eventId: "~optimistic:abc", sender: "@alice:example.com", body: "Hello"),
-        ]
+        // Send through the real flow so the placeholder's real event ID is
+        // tracked; only then should its echo replace it.
+        mock.sendMessageResult = "$real:example.com"
+        await appState.sendMessage(body: "Hello")
+        #expect(appState.messages.count == 1)
+        #expect(appState.messages[0].eventId.hasPrefix("~optimistic:"))
+
         mock.messagesResult = MessageBatch(
             messages: [makeMessage(eventId: "$real:example.com", sender: "@alice:example.com", body: "Hello")],
             endToken: nil
@@ -547,6 +551,31 @@ struct AppStateTests {
         #expect(mock.logoutCalls == 1)
     }
 
+    @Test("handleUnknownToken clears all session state to prevent cross-account leakage")
+    mutating func handleUnknownTokenClearsState() async {
+        appState.isLoggedIn = true
+        appState.loggedInUserId = "@alice:example.com"
+        appState.isSyncActive = true
+        appState.rooms = [
+            RoomInfo(id: "!a:x.com", displayName: "Room", isEncrypted: false, isPublic: false, isDirect: false, topic: nil, isInvited: false, unreadCount: 0),
+        ]
+        appState.messages = [makeMessage()]
+        appState.ignoredUsers = ["@bob:example.com"]
+
+        appState.handleUnknownToken(softLogout: true)
+
+        // No remnants of the invalidated account may survive for the next login.
+        #expect(appState.isLoggedIn == false)
+        #expect(appState.loggedInUserId == nil)
+        #expect(appState.isSyncActive == false)
+        #expect(appState.rooms.isEmpty)
+        #expect(appState.messages.isEmpty)
+        #expect(appState.selectedRoomId == nil)
+        #expect(appState.ignoredUsers.isEmpty)
+        #expect(appState.client == nil)
+        #expect(appState.errorMessage != nil)
+    }
+
     // MARK: - Typing Indicators
 
     @Test("Typing update filters out own user")
@@ -728,11 +757,12 @@ struct AppStateTests {
         let url = MediaTestHelpers.makeTempFile(name: "img.png", contents: MediaTestHelpers.bytes([0xFF]))
         defer { MediaTestHelpers.removeTempFile(at: url) }
 
+        mock.sendAttachmentResult = "$attach:x.com"
         await appState.sendAttachment(fileURL: url)
         #expect(appState.pendingAttachments.count == 1)
 
-        // Server confirms with a real event.
-        let realMsg = makeMessage(eventId: "$real:x.com", sender: "@alice:example.com", body: "img.png")
+        // Server confirms with the same event ID sendAttachment returned.
+        let realMsg = makeMessage(eventId: "$attach:x.com", sender: "@alice:example.com", body: "img.png")
         mock.messagesResult = MessageBatch(messages: [realMsg], endToken: nil)
 
         await appState.appendNewMessages()

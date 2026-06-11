@@ -116,14 +116,22 @@ final class MockMatrixClient: MatrixClientProtocol, @unchecked Sendable {
 
     // MARK: - MatrixClientProtocol
 
-    func sendMessage(roomId: String, body: String) async throws {
+    /// Event IDs returned by sendMessage/sendReply; defaults if unset.
+    var sendMessageResult = "$sent:example.com"
+    var sendReplyResult = "$reply:example.com"
+
+    @discardableResult
+    func sendMessage(roomId: String, body: String) async throws -> String {
         try errorFor(sendMessageError)
         sendMessageCalls.append((roomId, body))
+        return sendMessageResult
     }
 
-    func sendReply(roomId: String, eventId: String, body: String) async throws {
+    @discardableResult
+    func sendReply(roomId: String, eventId: String, body: String) async throws -> String {
         try errorFor(sendReplyError)
         sendReplyCalls.append((roomId, eventId, body))
+        return sendReplyResult
     }
 
     func editMessage(roomId: String, eventId: String, newBody: String) async throws {
@@ -157,9 +165,13 @@ final class MockMatrixClient: MatrixClientProtocol, @unchecked Sendable {
         sendTypingNoticeCalls.append((roomId, isTyping))
     }
 
-    func sendAttachment(roomId: String, filename: String, mimeType: String, data: Data, width: UInt32?, height: UInt32?) async throws {
+    var sendAttachmentResult = "$attachment:example.com"
+
+    @discardableResult
+    func sendAttachment(roomId: String, filename: String, mimeType: String, data: Data, width: UInt32?, height: UInt32?) async throws -> String {
         try errorFor(sendAttachmentError)
         sendAttachmentCalls.append((roomId, filename, mimeType, data, width, height))
+        return sendAttachmentResult
     }
 
     func downloadMedia(mxcUri: String) async throws -> Data {
@@ -168,10 +180,27 @@ final class MockMatrixClient: MatrixClientProtocol, @unchecked Sendable {
         return downloadMediaResult
     }
 
+    /// Per-room canned results; falls back to `messagesResult` when absent.
+    var messagesResultByRoom: [String: MessageBatch] = [:]
+    /// When set, the first `messages(roomId:)` call for this room suspends
+    /// until `releaseGate()` is called — lets tests interleave a room switch
+    /// between a fetch starting and its result being applied.
+    var gatedRoom: String?
+    private var gateContinuation: CheckedContinuation<Void, Never>?
+    var isGateArmed: Bool { gateContinuation != nil }
+    func releaseGate() {
+        gateContinuation?.resume()
+        gateContinuation = nil
+    }
+
     func messages(roomId: String, limit: UInt64, from: String?) async throws -> MessageBatch {
         try errorFor(messagesError)
         messagesCalls.append((roomId, limit, from))
-        return messagesResult
+        if gatedRoom == roomId {
+            gatedRoom = nil  // gate only the first matching call
+            await withCheckedContinuation { gateContinuation = $0 }
+        }
+        return messagesResultByRoom[roomId] ?? messagesResult
     }
 
     func rooms() async throws -> [RoomInfo] {
@@ -266,9 +295,21 @@ final class MockMatrixClient: MatrixClientProtocol, @unchecked Sendable {
         SessionInfo(userId: "@test:example.com", deviceId: "TESTDEV")
     }
 
-    func session() async -> MatrixSessionData? { nil }
-    func restoreSession(_ sessionData: MatrixSessionData) async throws {}
-    func syncOnce() async throws {}
+    var sessionResult: MatrixSessionData?
+    var restoreSessionError: Error?
+    var syncOnceError: Error?
+    var restoreSessionCalls = 0
+    var syncOnceCalls = 0
+
+    func session() async -> MatrixSessionData? { sessionResult }
+    func restoreSession(_ sessionData: MatrixSessionData) async throws {
+        try errorFor(restoreSessionError)
+        restoreSessionCalls += 1
+    }
+    func syncOnce() async throws {
+        try errorFor(syncOnceError)
+        syncOnceCalls += 1
+    }
     func createRoom(name: String, isPublic: Bool) async throws -> String {
         try errorFor(createRoomError)
         createRoomCalls.append((name, isPublic))

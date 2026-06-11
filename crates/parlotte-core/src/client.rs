@@ -13,6 +13,7 @@ use matrix_sdk::ruma::{OwnedRoomId, RoomId};
 use matrix_sdk::store::RoomLoadSettings;
 use matrix_sdk::utils::UrlOrQuery;
 use matrix_sdk::{Client, SessionMeta, SessionTokens};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::error::{ParlotteError, Result};
@@ -41,6 +42,12 @@ pub struct ParlotteClient {
     /// `begin_reset_identity` when the server requires OAuth/UIAA approval,
     /// consumed by `finish_reset_identity` or `cancel_reset_identity`.
     active_reset: Arc<tokio::sync::Mutex<Option<IdentityResetHandle>>>,
+    /// Event-handler handle for the current verification-request listener, so
+    /// re-registering replaces it instead of stacking a second handler.
+    verification_handle: std::sync::Mutex<Option<matrix_sdk::event_handler::EventHandlerHandle>>,
+    /// Task running the current session-change subscription loop, aborted when
+    /// the listener is replaced so old listeners stop receiving events.
+    session_change_task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl ParlotteClient {
@@ -78,6 +85,8 @@ impl ParlotteClient {
             sync_manager: SyncManager::new(),
             active_verification: Arc::new(tokio::sync::Mutex::new(ActiveVerification::default())),
             active_reset: Arc::new(tokio::sync::Mutex::new(None)),
+            verification_handle: std::sync::Mutex::new(None),
+            session_change_task: std::sync::Mutex::new(None),
         })
     }
 
@@ -345,7 +354,7 @@ impl ParlotteClient {
     /// one is minted.
     pub fn set_session_change_listener(&self, listener: Arc<dyn SessionChangeListener>) {
         let client = self.client().clone();
-        self.runtime.spawn(async move {
+        let task = self.runtime.spawn(async move {
             let mut rx = client.subscribe_to_session_changes();
             loop {
                 let change = match rx.recv().await {
@@ -379,6 +388,12 @@ impl ParlotteClient {
                 }
             }
         });
+
+        // Replace any previous subscription so old listeners stop firing and
+        // their tasks don't accumulate across re-registration (re-login).
+        if let Some(previous) = self.session_change_task.lock().unwrap().replace(task) {
+            previous.abort();
+        }
     }
 
     /// Restore a previously-saved OIDC session.
@@ -567,17 +582,18 @@ impl ParlotteClient {
     }
 
     /// Log out and invalidate the current session.
+    ///
+    /// Uses `Client::logout`, which dispatches to the active auth API: a plain
+    /// `/logout` for password/SSO sessions, or OAuth token revocation for OIDC
+    /// (MSC3861) sessions. The previous `matrix_auth().logout()` left OIDC
+    /// access/refresh tokens un-revoked at the provider.
     pub fn logout(&self) -> Result<()> {
         let client = self.client();
         self.runtime.block_on(async {
             self.sync_manager.stop();
-            client
-                .matrix_auth()
-                .logout()
-                .await
-                .map_err(|e| ParlotteError::Auth {
-                    message: e.to_string(),
-                })?;
+            client.logout().await.map_err(|e| ParlotteError::Auth {
+                message: e.to_string(),
+            })?;
             Ok(())
         })
     }
@@ -663,7 +679,9 @@ impl ParlotteClient {
     }
 
     /// Send a text message to a room.
-    pub fn send_message(&self, room_id: &str, body: &str) -> Result<()> {
+    /// Send a plain-text message. Returns the event ID assigned by the server
+    /// so the UI can match the optimistic placeholder to its real echo.
+    pub fn send_message(&self, room_id: &str, body: &str) -> Result<String> {
         let client = self.client();
         self.runtime.block_on(async {
             let room_id = <&RoomId>::try_from(room_id).map_err(|e| ParlotteError::Room {
@@ -677,16 +695,16 @@ impl ParlotteClient {
                 })?;
 
             let content = RoomMessageEventContent::text_plain(body);
-            room.send(content).await.map_err(|e| ParlotteError::Room {
+            let response = room.send(content).await.map_err(|e| ParlotteError::Room {
                 message: format!("failed to send message: {e}"),
             })?;
 
-            Ok(())
+            Ok(response.response.event_id.to_string())
         })
     }
 
-    /// Send a reply to a specific message in a room.
-    pub fn send_reply(&self, room_id: &str, event_id: &str, body: &str) -> Result<()> {
+    /// Send a reply to a specific message in a room. Returns the new event's ID.
+    pub fn send_reply(&self, room_id: &str, event_id: &str, body: &str) -> Result<String> {
         use matrix_sdk::room::reply::{EnforceThread, Reply};
         use matrix_sdk::ruma::events::room::message::{
             AddMentions, RoomMessageEventContentWithoutRelation,
@@ -724,13 +742,14 @@ impl ParlotteClient {
                     message: format!("failed to create reply: {e}"),
                 })?;
 
-            room.send(reply_content)
+            let response = room
+                .send(reply_content)
                 .await
                 .map_err(|e| ParlotteError::Room {
                     message: format!("failed to send reply: {e}"),
                 })?;
 
-            Ok(())
+            Ok(response.response.event_id.to_string())
         })
     }
 
@@ -765,11 +784,11 @@ impl ParlotteClient {
                 })?;
 
             use matrix_sdk::ruma::events::room::message::Relation;
-            use std::collections::HashMap;
 
             let mut messages = Vec::new();
-            // Track edits: original_event_id -> (new body, new formatted_body)
-            let mut edits: HashMap<String, (String, Option<String>)> = HashMap::new();
+            // Track edit candidates: original_event_id -> replacements in
+            // newest-first order (the batch is iterated newest-first).
+            let mut edits: HashMap<String, Vec<EditCandidate>> = HashMap::new();
             // Track reactions: target_event_id -> Vec<ReactionInfo>
             let mut reactions_map: HashMap<String, Vec<ReactionInfo>> = HashMap::new();
 
@@ -797,6 +816,35 @@ impl ParlotteClient {
                         });
                 }
 
+                // Events the SDK couldn't decrypt arrive as `m.room.encrypted`.
+                // Surface them as an explicit placeholder instead of silently
+                // dropping them, so the timeline doesn't look like messages
+                // went missing.
+                if let AnySyncTimelineEvent::MessageLike(
+                    matrix_sdk::ruma::events::AnySyncMessageLikeEvent::RoomEncrypted(
+                        matrix_sdk::ruma::events::SyncMessageLikeEvent::Original(original),
+                    ),
+                ) = &deserialized
+                {
+                    messages.push(MessageInfo {
+                        event_id: original.event_id.to_string(),
+                        sender: original.sender.to_string(),
+                        body: "Unable to decrypt message".to_owned(),
+                        formatted_body: None,
+                        message_type: "encrypted".to_owned(),
+                        timestamp_ms: original.origin_server_ts.0.into(),
+                        is_edited: false,
+                        replied_to_event_id: None,
+                        media_source: None,
+                        media_mime_type: None,
+                        media_width: None,
+                        media_height: None,
+                        media_size: None,
+                        reactions: vec![],
+                    });
+                    continue;
+                }
+
                 if let AnySyncTimelineEvent::MessageLike(
                     matrix_sdk::ruma::events::AnySyncMessageLikeEvent::RoomMessage(msg),
                 ) = deserialized
@@ -811,7 +859,14 @@ impl ParlotteClient {
                     if let Some(Relation::Replacement(replacement)) = &original.content.relates_to {
                         let (body, formatted) =
                             extract_body_and_formatted(&replacement.new_content.msgtype);
-                        edits.insert(replacement.event_id.to_string(), (body, formatted));
+                        edits
+                            .entry(replacement.event_id.to_string())
+                            .or_default()
+                            .push(EditCandidate {
+                                body,
+                                formatted_body: formatted,
+                                sender: original.sender.to_string(),
+                            });
                         continue;
                     }
 
@@ -848,13 +903,7 @@ impl ParlotteClient {
             }
 
             // Apply edits to original messages
-            for msg in &mut messages {
-                if let Some((new_body, new_formatted)) = edits.remove(&msg.event_id) {
-                    msg.body = new_body;
-                    msg.formatted_body = new_formatted;
-                    msg.is_edited = true;
-                }
-            }
+            apply_edits(&mut messages, edits);
 
             // Attach reactions to their target messages
             for msg in &mut messages {
@@ -951,8 +1000,14 @@ impl ParlotteClient {
 
         let client = self.client();
         self.runtime.block_on(async {
+            // Validate both IDs before the room lookup so invalid input is
+            // reported as such regardless of whether the room exists.
             let room_id = <&RoomId>::try_from(room_id).map_err(|e| ParlotteError::Room {
                 message: format!("invalid room ID: {e}"),
+            })?;
+
+            let event_id = <&EventId>::try_from(event_id).map_err(|e| ParlotteError::Room {
+                message: format!("invalid event ID: {e}"),
             })?;
 
             let room = client
@@ -960,10 +1015,6 @@ impl ParlotteClient {
                 .ok_or_else(|| ParlotteError::Room {
                     message: format!("room {room_id} not found"),
                 })?;
-
-            let event_id = <&EventId>::try_from(event_id).map_err(|e| ParlotteError::Room {
-                message: format!("invalid event ID: {e}"),
-            })?;
 
             let content =
                 ReactionEventContent::new(Annotation::new(event_id.to_owned(), key.to_owned()));
@@ -1432,6 +1483,8 @@ impl ParlotteClient {
     /// the mime's top-level type is `image`, the attachment is sent as
     /// `m.image` with the provided dimensions; otherwise it is sent as
     /// `m.file`.
+    /// Send a file/image attachment. Returns the event ID assigned by the
+    /// server so the UI can resolve its optimistic placeholder.
     pub fn send_attachment(
         &self,
         room_id: &str,
@@ -1440,7 +1493,7 @@ impl ParlotteClient {
         data: Vec<u8>,
         width: Option<u32>,
         height: Option<u32>,
-    ) -> Result<()> {
+    ) -> Result<String> {
         use matrix_sdk::attachment::{
             AttachmentConfig, AttachmentInfo, BaseFileInfo, BaseImageInfo,
         };
@@ -1479,13 +1532,14 @@ impl ParlotteClient {
                 })?;
 
             let config = AttachmentConfig::new().info(info);
-            room.send_attachment(filename.to_owned(), &mime, data, config)
+            let response = room
+                .send_attachment(filename.to_owned(), &mime, data, config)
                 .await
                 .map_err(|e| ParlotteError::Room {
                     message: format!("failed to send attachment: {e}"),
                 })?;
 
-            Ok(())
+            Ok(response.event_id.to_string())
         })
     }
 
@@ -1784,10 +1838,12 @@ impl ParlotteClient {
         let client = self.client();
         let active_reset = self.active_reset.clone();
         self.runtime.block_on(async move {
-            // If a handle exists, drive the auth loop to completion. Pull it
-            // out of the slot so a cancellation during `reset(..)` doesn't
-            // leave a stale handle behind.
-            if let Some(handle) = active_reset.lock().await.take() {
+            // Take the handle out of the mutex in its own scope so the guard is
+            // dropped before the (potentially minutes-long) `reset(..)` await.
+            // Holding it across the await would block `cancel_reset_identity`
+            // from ever acquiring the lock to cancel.
+            let handle = { active_reset.lock().await.take() };
+            if let Some(handle) = handle {
                 handle.reset(None).await.map_err(|e| ParlotteError::Auth {
                     message: format!("identity reset failed: {e}"),
                 })?;
@@ -1845,7 +1901,7 @@ impl ParlotteClient {
         let active = self.active_verification.clone();
         let listener_for_handler = listener.clone();
 
-        self.runtime.block_on(async move {
+        let handle = self.runtime.block_on(async move {
             client.add_event_handler(
                 move |event: ToDeviceKeyVerificationRequestEvent, client: matrix_sdk::Client| {
                     let listener = listener_for_handler.clone();
@@ -1872,8 +1928,15 @@ impl ParlotteClient {
                         }
                     }
                 },
-            );
+            )
         });
+
+        // Remove a previously-registered handler so re-registration replaces
+        // it rather than stacking duplicate handlers (each would fire its own
+        // callback and pin an old listener object alive).
+        if let Some(previous) = self.verification_handle.lock().unwrap().replace(handle) {
+            self.client().remove_event_handler(previous);
+        }
     }
 
     /// Start a self-verification flow: send a verification request to all our
@@ -2080,6 +2143,32 @@ impl ParlotteClient {
 }
 
 /// Extract the plain-text body and optional HTML formatted body from a message type.
+/// A single `m.replace` (edit) event collected while scanning a batch.
+struct EditCandidate {
+    body: String,
+    formatted_body: Option<String>,
+    sender: String,
+}
+
+/// Apply aggregated edits to their target messages. Per the Matrix spec an
+/// edit is only valid when its sender matches the original event's sender —
+/// servers do not filter cross-sender replacements out of `/messages`, so
+/// skipping this check lets any room member rewrite anyone's message.
+/// Candidates are newest-first; the first valid one per target wins, so a
+/// spoofed newer "edit" can't shadow a legitimate older one.
+fn apply_edits(messages: &mut [MessageInfo], mut edits: HashMap<String, Vec<EditCandidate>>) {
+    for msg in messages.iter_mut() {
+        let Some(candidates) = edits.remove(&msg.event_id) else {
+            continue;
+        };
+        if let Some(edit) = candidates.into_iter().find(|e| e.sender == msg.sender) {
+            msg.body = edit.body;
+            msg.formatted_body = edit.formatted_body;
+            msg.is_edited = true;
+        }
+    }
+}
+
 fn extract_body_and_formatted(
     msgtype: &matrix_sdk::ruma::events::room::message::MessageType,
 ) -> (String, Option<String>) {
@@ -2473,6 +2562,88 @@ mod tests {
         assert!(err.to_string().contains("invalid user ID"));
     }
 
+    fn make_message(event_id: &str, sender: &str, body: &str) -> MessageInfo {
+        MessageInfo {
+            event_id: event_id.into(),
+            sender: sender.into(),
+            body: body.into(),
+            formatted_body: None,
+            message_type: "text".into(),
+            timestamp_ms: 0,
+            is_edited: false,
+            replied_to_event_id: None,
+            media_source: None,
+            media_mime_type: None,
+            media_width: None,
+            media_height: None,
+            media_size: None,
+            reactions: vec![],
+        }
+    }
+
+    fn make_edit(sender: &str, body: &str) -> EditCandidate {
+        EditCandidate {
+            body: body.into(),
+            formatted_body: None,
+            sender: sender.into(),
+        }
+    }
+
+    #[test]
+    fn apply_edits_same_sender_applies() {
+        let mut messages = vec![make_message("$1", "@alice:x.com", "original")];
+        let mut edits = HashMap::new();
+        edits.insert("$1".to_string(), vec![make_edit("@alice:x.com", "edited")]);
+        apply_edits(&mut messages, edits);
+        assert_eq!(messages[0].body, "edited");
+        assert!(messages[0].is_edited);
+    }
+
+    #[test]
+    fn apply_edits_rejects_cross_sender_spoof() {
+        let mut messages = vec![make_message("$1", "@alice:x.com", "original")];
+        let mut edits = HashMap::new();
+        edits.insert(
+            "$1".to_string(),
+            vec![make_edit("@mallory:evil.com", "spoofed")],
+        );
+        apply_edits(&mut messages, edits);
+        assert_eq!(messages[0].body, "original");
+        assert!(!messages[0].is_edited);
+    }
+
+    #[test]
+    fn apply_edits_newest_edit_wins() {
+        let mut messages = vec![make_message("$1", "@alice:x.com", "original")];
+        let mut edits = HashMap::new();
+        // Candidates are collected newest-first from the batch.
+        edits.insert(
+            "$1".to_string(),
+            vec![
+                make_edit("@alice:x.com", "second edit"),
+                make_edit("@alice:x.com", "first edit"),
+            ],
+        );
+        apply_edits(&mut messages, edits);
+        assert_eq!(messages[0].body, "second edit");
+    }
+
+    #[test]
+    fn apply_edits_spoofed_newest_does_not_shadow_legit_older() {
+        let mut messages = vec![make_message("$1", "@alice:x.com", "original")];
+        let mut edits = HashMap::new();
+        edits.insert(
+            "$1".to_string(),
+            vec![
+                make_edit("@mallory:evil.com", "spoofed"),
+                make_edit("@alice:x.com", "legit edit"),
+            ],
+        );
+        apply_edits(&mut messages, edits);
+        assert_eq!(messages[0].body, "legit edit");
+        assert!(messages[0].is_edited);
+    }
+
     #[test]
     fn ignore_user_rejects_invalid_user_id() {
         let client = ParlotteClient::new("http://localhost:1234", None).unwrap();
@@ -2709,10 +2880,15 @@ mod tests {
     #[test]
     fn send_reaction_rejects_invalid_event_id() {
         let client = ParlotteClient::new("http://localhost:1234", None).unwrap();
+        // A syntactically valid room ID with a bad event ID must fail
+        // specifically on the event ID — input is validated before the room
+        // lookup, so this no longer passes merely because the room is absent.
         let result = client.send_reaction("!room:example.com", "bad-event", "👍");
-        assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("invalid event ID") || err_msg.contains("not found"));
+        assert!(
+            err_msg.contains("invalid event ID"),
+            "expected invalid event ID error, got: {err_msg}"
+        );
     }
 
     #[test]

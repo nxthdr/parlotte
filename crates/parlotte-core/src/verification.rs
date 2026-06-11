@@ -141,3 +141,47 @@ pub(crate) fn derive_state(active: &ActiveVerification) -> Result<VerificationSt
         }),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn derive_state_with_no_request_errors() {
+        // The SDK request/SAS types can't be constructed without a live flow,
+        // so only the empty-active guard is unit-testable here — but it's the
+        // branch that protects every caller from an unwrap on a missing request.
+        let active = ActiveVerification::default();
+        let result = derive_state(&active);
+        assert!(matches!(result, Err(ParlotteError::Unknown { .. })));
+    }
+
+    #[test]
+    fn emoji_info_construction() {
+        let e = EmojiInfo {
+            symbol: "🐶".to_string(),
+            description: "Dog".to_string(),
+        };
+        assert_eq!(e.symbol, "🐶");
+        assert_eq!(e.description, "Dog");
+    }
+
+    #[test]
+    fn verification_state_variants_are_distinct() {
+        // Guards against the enum being collapsed/reordered in a way the FFI
+        // conversion depends on.
+        let ready = VerificationState::SasReadyToCompare {
+            emojis: vec![EmojiInfo {
+                symbol: "🐱".into(),
+                description: "Cat".into(),
+            }],
+        };
+        match ready {
+            VerificationState::SasReadyToCompare { emojis } => {
+                assert_eq!(emojis.len(), 1);
+                assert_eq!(emojis[0].symbol, "🐱");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+}

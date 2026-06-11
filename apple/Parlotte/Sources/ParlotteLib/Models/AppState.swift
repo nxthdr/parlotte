@@ -106,6 +106,7 @@ public final class AppState {
             messageEndToken = nil
             hasMoreMessages = false
             memberProfiles = [:]
+            pendingSends = [:]
             if let roomId = selectedRoomId {
                 // Optimistically clear unread count immediately
                 if let idx = rooms.firstIndex(where: { $0.id == roomId }) {
@@ -122,10 +123,30 @@ public final class AppState {
     /// Task spawned by `selectedRoomId.didSet` to refresh messages.
     /// Exposed as internal so tests can await its completion before asserting.
     var roomRefreshTask: Task<Void, Never>?
+
+    /// Bumped on logout / token invalidation. A network call captures the
+    /// epoch before its `await`; if it changed by the time the call returns,
+    /// the session was torn down underneath it and the result must be dropped
+    /// instead of repopulating logged-out state.
+    private var sessionEpoch = 0
+
+    /// True if work that captured `(roomId, epoch)` before an await should
+    /// discard its result: the user switched rooms or the session was reset
+    /// during the suspension. Centralises the guard that `refreshMessages`,
+    /// `appendNewMessages` and `loadMoreMessages` need after every await.
+    private func isStale(roomId: String, epoch: Int) -> Bool {
+        epoch != sessionEpoch || roomId != selectedRoomId
+    }
     public var messages: [MessageInfo] = []
     public var hasMoreMessages = false
     public var isLoadingMoreMessages = false
     private var messageEndToken: String?
+
+    /// Maps a sent message's real (server-assigned) event ID to the optimistic
+    /// placeholder awaiting it. Lets a sync tick remove *only* the placeholder
+    /// whose echo actually arrived, instead of sweeping every in-flight send
+    /// the moment any new message shows up.
+    private var pendingSends: [String: String] = [:]
 
     /// Member profiles for the selected room: userId -> (displayName, avatarUrl).
     /// Populated automatically when a room is selected.
@@ -166,6 +187,13 @@ public final class AppState {
 
     public var client: (any MatrixClientProtocol)?
 
+    /// Builds the Matrix client. Overridable in tests to inject a mock so the
+    /// login/restore flows are exercisable without a real homeserver. The
+    /// default builds the real UniFFI-backed client.
+    var clientFactory: (_ homeserverURL: String, _ storePath: String) throws -> any MatrixClientProtocol = {
+        try MatrixClient(homeserverURL: $0, storePath: $1)
+    }
+
     public init(profile: String = "default") {
         self.profile = profile
         // Load persisted appearance preference. didSet doesn't fire in init,
@@ -185,7 +213,7 @@ public final class AppState {
 
         do {
             let storePath = storePath()
-            let client = try MatrixClient(homeserverURL: homeserverURL, storePath: storePath)
+            let client = try clientFactory(homeserverURL, storePath)
             let methods = try await client.loginMethods()
             supportsPassword = methods.supportsPassword
             supportsSso = methods.supportsSso
@@ -211,7 +239,7 @@ public final class AppState {
             self.client = nil
             clearStore()
             let storePath = storePath()
-            let client = try MatrixClient(homeserverURL: homeserverURL, storePath: storePath)
+            let client = try clientFactory(homeserverURL, storePath)
             self.client = client
 
             // Random state parameter binds the browser redirect back to this
@@ -249,6 +277,10 @@ public final class AppState {
             try await client.syncOnce()
             await fetchProfile()
             await refreshIgnoredUsers()
+            await refreshRecoveryState()
+            if recoveryState == .incomplete {
+                isPromptingRecoveryEntry = true
+            }
             await refreshRooms()
             startSyncLoop()
         } catch {
@@ -266,7 +298,7 @@ public final class AppState {
             self.client = nil
             clearStore()
             let storePath = storePath()
-            let client = try MatrixClient(homeserverURL: homeserverURL, storePath: storePath)
+            let client = try clientFactory(homeserverURL, storePath)
             self.client = client
 
             let redirectUri = OidcAuthSession.callbackURL
@@ -308,7 +340,7 @@ public final class AppState {
         do {
             clearStore()
             let storePath = storePath()
-            let client = try MatrixClient(homeserverURL: homeserverURL, storePath: storePath)
+            let client = try clientFactory(homeserverURL, storePath)
             _ = try await client.login(username: username, password: password)
             let session = await client.session()
             saveSession(session, homeserverURL: homeserverURL)
@@ -346,7 +378,7 @@ public final class AppState {
 
         do {
             let storePath = storePath()
-            let client = try MatrixClient(homeserverURL: saved.homeserverURL, storePath: storePath)
+            let client = try clientFactory(saved.homeserverURL, storePath)
             try await client.restoreSession(MatrixSessionData(
                 userId: saved.userId,
                 deviceId: saved.deviceId,
@@ -355,11 +387,21 @@ public final class AppState {
             self.homeserverURL = saved.homeserverURL
             self.client = client
             self.loggedInUserId = saved.userId
-            await refreshRooms()
+            isCheckingSession = false
+
+            // A failed initial sync must not invalidate the session: being
+            // offline at launch is not the same as a bad token. Only an auth
+            // error means the saved credentials are actually unusable; any
+            // other failure brings the user in against the local store and
+            // lets the persistent sync loop reconnect.
+            do {
+                try await client.syncOnce()
+            } catch {
+                if error.isAuthError { throw error }
+            }
+
             isLoggedIn = true
             isSyncActive = true
-            isCheckingSession = false
-            try await client.syncOnce()
             await fetchProfile()
             await refreshIgnoredUsers()
             await refreshRecoveryState()
@@ -369,17 +411,24 @@ public final class AppState {
             await refreshRooms()
             startSyncLoop()
         } catch {
+            isCheckingSession = false
+            guard error.isAuthError else {
+                // Transient/store error: keep the saved session and the
+                // encrypted store so a later launch can recover. Don't strand
+                // the user as logged-in against a client we couldn't restore.
+                self.client = nil
+                return
+            }
             clearSavedSession()
             clearStore()
             self.client = nil
-            isCheckingSession = false
         }
     }
 
     private func restoreOidcSession(_ saved: SavedOidcSession) async {
         do {
             let storePath = storePath()
-            let client = try MatrixClient(homeserverURL: saved.homeserverURL, storePath: storePath)
+            let client = try clientFactory(saved.homeserverURL, storePath)
             try await client.oidcRestoreSession(OidcSessionData(
                 userId: saved.userId,
                 deviceId: saved.deviceId,
@@ -390,11 +439,18 @@ public final class AppState {
             self.homeserverURL = saved.homeserverURL
             self.client = client
             self.loggedInUserId = saved.userId
-            await refreshRooms()
+            isCheckingSession = false
+
+            // As in restoreSession: tolerate a transient initial-sync failure
+            // (offline launch) and only discard the session on an auth error.
+            do {
+                try await client.syncOnce()
+            } catch {
+                if error.isAuthError { throw error }
+            }
+
             isLoggedIn = true
             isSyncActive = true
-            isCheckingSession = false
-            try await client.syncOnce()
             await fetchProfile()
             await refreshIgnoredUsers()
             await refreshRecoveryState()
@@ -404,11 +460,15 @@ public final class AppState {
             await refreshRooms()
             startSyncLoop()
         } catch {
+            isCheckingSession = false
+            guard error.isAuthError else {
+                self.client = nil
+                return
+            }
             clearSavedOidcSession()
             clearSavedSession()
             clearStore()
             self.client = nil
-            isCheckingSession = false
         }
     }
 
@@ -428,11 +488,16 @@ public final class AppState {
         await logout()
     }
 
-    public func logout() async {
-        isConfirmingLastDeviceLogout = false
+    /// Clear all in-memory session state. Shared by `logout()` and
+    /// `handleUnknownToken` so neither can leave the previous account's rooms,
+    /// messages, selected room, profiles, or crypto/verification state visible
+    /// — which on a shared machine would leak one account's data into the next
+    /// login. Bumps `sessionEpoch` so in-flight refreshes discard their
+    /// results. Does not touch persisted storage or call the network.
+    private func resetInMemorySessionState() {
+        sessionEpoch &+= 1
         client?.stopSync()
         isSyncActive = false
-        try? await client?.logout()
         client = nil
         isLoggedIn = false
         loggedInUserId = nil
@@ -456,8 +521,21 @@ public final class AppState {
         verificationErrorMessage = nil
         isProcessingVerification = false
         pendingAttachments.removeAll()
+        pendingSends = [:]
         mediaCache.removeAllObjects()
         previousUnreadCounts = [:]
+    }
+
+    public func logout() async {
+        isConfirmingLastDeviceLogout = false
+        // Bump the epoch before the network await so an in-flight refresh that
+        // resumes during it discards its result instead of repopulating state.
+        let client = self.client
+        sessionEpoch &+= 1
+        try? await client?.logout()
+        // Clears in-memory state and stops sync (once) before dropping the client.
+        resetInMemorySessionState()
+        errorMessage = nil
         clearSavedSession()
         clearSavedOidcSession()
         clearStore()
@@ -475,10 +553,21 @@ public final class AppState {
     @discardableResult
     public func refreshRooms() async -> Bool {
         guard let client else { return false }
+        let epoch = sessionEpoch
         do {
             var updated = try await client.rooms()
+            // Don't repopulate room state if logout ran during the fetch.
+            guard epoch == sessionEpoch else { return false }
 
             let candidates = notificationCandidates(in: updated)
+
+            // Record the server's actual unread counts BEFORE locally zeroing
+            // the selected room. Recording the zeroed value would make every
+            // subsequent tick see the still-nonzero server count as "new"
+            // (until the read receipt propagates) and re-notify each time.
+            let serverUnreadCounts = Dictionary(
+                uniqueKeysWithValues: updated.map { ($0.id, $0.unreadCount) }
+            )
 
             var hasNewMessages = false
             if let selected = selectedRoomId,
@@ -487,9 +576,7 @@ public final class AppState {
                 updated[idx].unreadCount = 0
             }
             rooms = updated
-            previousUnreadCounts = Dictionary(
-                uniqueKeysWithValues: updated.map { ($0.id, $0.unreadCount) }
-            )
+            previousUnreadCounts = serverUnreadCounts
 
             await dispatchNotifications(for: candidates)
 
@@ -569,8 +656,12 @@ public final class AppState {
             messages = []
             return
         }
+        let epoch = sessionEpoch
         do {
             let batch = try await client.messages(roomId: roomId, limit: 50, from: nil)
+            // The user may have switched rooms (or logged out) during the
+            // fetch; applying A's batch to B's view would corrupt the timeline.
+            guard !isStale(roomId: roomId, epoch: epoch) else { return }
             messages = batch.messages
             messageEndToken = batch.endToken
             hasMoreMessages = batch.endToken != nil
@@ -583,8 +674,13 @@ public final class AppState {
     /// Minimises array mutations to avoid unnecessary SwiftUI re-renders.
     public func appendNewMessages() async {
         guard let client, let roomId = selectedRoomId, !messages.isEmpty else { return }
+        let epoch = sessionEpoch
         do {
             let batch = try await client.messages(roomId: roomId, limit: 50, from: nil)
+            // Bail if the room changed under us: steps 2–3 below mutate the
+            // `messages` array relative to this batch, which would delete the
+            // new room's messages and graft this room's in.
+            guard !isStale(roomId: roomId, epoch: epoch) else { return }
             let serverMessages = batch.messages
             let serverById = Dictionary(
                 serverMessages.map { ($0.eventId, $0) },
@@ -593,10 +689,15 @@ public final class AppState {
 
             var changed = false
 
-            // 1. Update edited messages in place
+            // 1. Update edited messages in place. Compare formattedBody too:
+            // an optimistic edit clears it (and sets isEdited), so the server
+            // echo of a formatted edit has matching body/isEdited/reactions but
+            // a differing formattedBody — without this check the rich version
+            // would never replace the plain optimistic one.
             for i in messages.indices {
                 if let serverMsg = serverById[messages[i].eventId] {
                     if messages[i].body != serverMsg.body
+                        || messages[i].formattedBody != serverMsg.formattedBody
                         || messages[i].isEdited != serverMsg.isEdited
                         || messages[i].reactions != serverMsg.reactions
                     {
@@ -624,11 +725,19 @@ public final class AppState {
             let existingIds = Set(messages.map(\.eventId))
             let newMessages = serverMessages.filter { !existingIds.contains($0.eventId) }
             if !newMessages.isEmpty {
-                // Replace optimistic placeholders now that real messages arrived
-                for msg in messages where msg.eventId.hasPrefix("~optimistic:") {
-                    pendingAttachments.removeValue(forKey: msg.eventId)
+                // Resolve only the placeholders whose real echo is in this
+                // batch — never sweep placeholders for sends still in flight
+                // (a different sender's message arriving must not erase my
+                // not-yet-confirmed send).
+                let arrivedIds = Set(newMessages.map(\.eventId))
+                let resolved = Set(pendingSends.filter { arrivedIds.contains($0.key) }.values)
+                if !resolved.isEmpty {
+                    for placeholderId in resolved {
+                        pendingAttachments.removeValue(forKey: placeholderId)
+                    }
+                    messages.removeAll { resolved.contains($0.eventId) }
+                    pendingSends = pendingSends.filter { !arrivedIds.contains($0.key) }
                 }
-                messages.removeAll { $0.eventId.hasPrefix("~optimistic:") }
                 messages.append(contentsOf: newMessages)
                 changed = true
             }
@@ -638,6 +747,19 @@ public final class AppState {
             }
         } catch {
             // Non-fatal
+        }
+    }
+
+    /// Reconcile a just-confirmed send with its optimistic placeholder. If the
+    /// server echo already arrived via a sync tick (it raced ahead of the send
+    /// call returning), drop the placeholder now; otherwise record the real
+    /// event ID so the next sync tick resolves it.
+    private func resolvePlaceholder(placeholderId: String, realEventId: String) {
+        if messages.contains(where: { $0.eventId == realEventId }) {
+            messages.removeAll { $0.eventId == placeholderId }
+            pendingAttachments.removeValue(forKey: placeholderId)
+        } else {
+            pendingSends[realEventId] = placeholderId
         }
     }
 
@@ -665,17 +787,31 @@ public final class AppState {
               let token = messageEndToken, !isLoadingMoreMessages else { return }
 
         isLoadingMoreMessages = true
+        let epoch = sessionEpoch
         do {
             let batch = try await client.messages(roomId: roomId, limit: 50, from: token)
+            // Discard a page that arrives after a room switch: prepending A's
+            // history into B and storing A's pagination token would break both.
+            guard !isStale(roomId: roomId, epoch: epoch) else {
+                isLoadingMoreMessages = false
+                return
+            }
             let existingIds = Set(messages.map(\.eventId))
             let deduped = batch.messages.filter { !existingIds.contains($0.eventId) }
-            if deduped.isEmpty {
+            if let endToken = batch.endToken {
+                // Advance the cursor even if this page fully overlapped what we
+                // already have; only a nil endToken means end-of-history.
+                if !deduped.isEmpty {
+                    messages.insert(contentsOf: deduped, at: 0)
+                }
+                messageEndToken = endToken
+                hasMoreMessages = true
+            } else {
+                if !deduped.isEmpty {
+                    messages.insert(contentsOf: deduped, at: 0)
+                }
                 hasMoreMessages = false
                 messageEndToken = nil
-            } else {
-                messages.insert(contentsOf: deduped, at: 0)
-                messageEndToken = batch.endToken
-                hasMoreMessages = batch.endToken != nil
             }
         } catch {
             // Non-fatal
@@ -729,7 +865,7 @@ public final class AppState {
         pendingAttachments[placeholder.eventId] = data
 
         do {
-            try await client.sendAttachment(
+            let realId = try await client.sendAttachment(
                 roomId: roomId,
                 filename: filename,
                 mimeType: mimeType,
@@ -737,6 +873,7 @@ public final class AppState {
                 width: width,
                 height: height
             )
+            resolvePlaceholder(placeholderId: placeholder.eventId, realEventId: realId)
         } catch {
             messages.removeAll { $0.eventId == placeholder.eventId }
             pendingAttachments.removeValue(forKey: placeholder.eventId)
@@ -778,7 +915,8 @@ public final class AppState {
         messages.append(placeholder)
 
         do {
-            try await client.sendMessage(roomId: roomId, body: trimmed)
+            let realId = try await client.sendMessage(roomId: roomId, body: trimmed)
+            resolvePlaceholder(placeholderId: placeholder.eventId, realEventId: realId)
         } catch {
             messages.removeAll { $0.eventId == placeholder.eventId }
             errorMessage = error.displayMessage
@@ -845,7 +983,8 @@ public final class AppState {
         messages.append(placeholder)
 
         do {
-            try await client.sendReply(roomId: roomId, eventId: eventId, body: trimmed)
+            let realId = try await client.sendReply(roomId: roomId, eventId: eventId, body: trimmed)
+            resolvePlaceholder(placeholderId: placeholder.eventId, realEventId: realId)
         } catch {
             messages.removeAll { $0.eventId == placeholder.eventId }
             errorMessage = error.displayMessage
@@ -1029,15 +1168,17 @@ public final class AppState {
     public func ignoreUser(userId: String) async {
         guard let client else { return }
         let inserted = ignoredUsers.insert(userId).inserted
+        // Pin BEFORE the await. The local store reflects the change only after
+        // the server echoes it in a sync response, and a sync tick can run
+        // during this call — without the pin in place first, that tick's
+        // refreshIgnoredUsers would flash the user's messages back.
+        let pinned = pendingIgnored.insert(userId).inserted
+        pendingUnignored.remove(userId)
         do {
             try await client.ignoreUser(userId: userId)
-            // The local store reflects the change only after the server echoes
-            // it in a sync response; keep it pinned until then so a sync-tick
-            // refresh can't flash the user's messages back.
-            pendingIgnored.insert(userId)
-            pendingUnignored.remove(userId)
         } catch {
             if inserted { ignoredUsers.remove(userId) }
+            if pinned { pendingIgnored.remove(userId) }
             errorMessage = error.displayMessage
         }
     }
@@ -1046,12 +1187,13 @@ public final class AppState {
     public func unignoreUser(userId: String) async {
         guard let client else { return }
         let removed = ignoredUsers.remove(userId) != nil
+        let pinned = pendingUnignored.insert(userId).inserted
+        pendingIgnored.remove(userId)
         do {
             try await client.unignoreUser(userId: userId)
-            pendingUnignored.insert(userId)
-            pendingIgnored.remove(userId)
         } catch {
             if removed { ignoredUsers.insert(userId) }
+            if pinned { pendingUnignored.remove(userId) }
             errorMessage = error.displayMessage
         }
     }
@@ -1338,6 +1480,9 @@ public final class AppState {
     /// the member-profile cache so other users' display name/avatar changes are
     /// picked up without needing to switch rooms.
     public func handleSyncUpdate() async {
+        // A successful tick means we're connected; clear the retry budget so a
+        // later isolated failure gets a fresh set of restart attempts.
+        syncRestartAttempts = 0
         await refreshVerificationState()
         await refreshIgnoredUsers()
         await refreshRooms()
@@ -1375,6 +1520,32 @@ public final class AppState {
         }
     }
 
+    /// Invoked by `SyncUpdateHandler` when the core sync loop stops. A `nil`
+    /// error is a clean stop (logout/restart) and needs no action. A non-nil
+    /// error means the loop exhausted its retries; surface an offline state
+    /// and attempt a bounded number of restarts so a long outage doesn't
+    /// leave the app permanently disconnected without spinning.
+    func handleSyncStopped(error: String?) async {
+        guard error != nil else {
+            syncRestartAttempts = 0
+            return
+        }
+        // Only restart if we still believe we're logged in and weren't asked
+        // to stop (logout sets isSyncActive = false before stopping).
+        guard isLoggedIn, isSyncActive, client != nil else { return }
+
+        if syncRestartAttempts >= maxSyncRestartAttempts {
+            isSyncActive = false
+            errorMessage = "Connection lost. Reopen the app to reconnect."
+            return
+        }
+        syncRestartAttempts += 1
+        startSyncLoop()
+    }
+
+    private var syncRestartAttempts = 0
+    private let maxSyncRestartAttempts = 5
+
     /// Invoked by `SessionChangeHandler` when matrix-sdk rotates the OIDC
     /// tokens. MAS invalidates the previous refresh token on use, so we must
     /// persist the new one immediately — otherwise the next app launch
@@ -1383,26 +1554,26 @@ public final class AppState {
         saveOidcSession(session, homeserverURL: homeserverURL)
     }
 
-    /// Invoked when the server returns `M_UNKNOWN_TOKEN`. Both paths
-    /// require a fresh login; we stop sync and clear the saved OIDC
-    /// session so `LoginView` reappears on next app launch.
+    /// Invoked when the server returns `M_UNKNOWN_TOKEN`. Both paths require a
+    /// fresh login. We clear all in-memory state (so the next user on this
+    /// machine can't see the previous account's rooms/messages) and the saved
+    /// session tokens, but preserve the encrypted store so a re-login can still
+    /// restore E2EE history.
     func handleUnknownToken(softLogout: Bool) {
-        client?.stopSync()
-        isSyncActive = false
+        resetInMemorySessionState()
         clearSavedOidcSession()
         clearSavedSession()
-        isLoggedIn = false
         errorMessage = softLogout
             ? "Your session expired. Please sign in again."
             : "Your session was invalidated by the server. Please sign in again."
     }
 
-    private func clearStore() {
+    func clearStore() {
         let dir = Self.storeDir(profile: profile)
         try? FileManager.default.removeItem(at: dir)
     }
 
-    private func storePath() -> String {
+    func storePath() -> String {
         let dir = Self.storeDir(profile: profile)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.path
@@ -1419,7 +1590,7 @@ public final class AppState {
 
     // MARK: - Session persistence
 
-    private struct SavedSession {
+    struct SavedSession {
         let homeserverURL: String
         let userId: String
         let deviceId: String
@@ -1432,7 +1603,7 @@ public final class AppState {
         "parlotte.\(profile).\(name)"
     }
 
-    private func saveSession(_ data: MatrixSessionData?, homeserverURL: String) {
+    func saveSession(_ data: MatrixSessionData?, homeserverURL: String) {
         guard let data else { return }
         let d = Self.defaults
         d.set(homeserverURL, forKey: key("homeserver"))
@@ -1440,11 +1611,15 @@ public final class AppState {
         d.set(data.deviceId, forKey: key("deviceId"))
         // Access token goes to the Keychain, not UserDefaults — it was
         // previously plaintext under `~/Library/Containers/.../Preferences`.
-        ParlotteKeychain.set(data.accessToken, account: key("accessToken"))
-        d.removeObject(forKey: key("accessToken"))
+        // Only drop any stale plaintext copy if the Keychain write succeeded.
+        if ParlotteKeychain.set(data.accessToken, account: key("accessToken")) {
+            d.removeObject(forKey: key("accessToken"))
+        } else {
+            errorMessage = "Couldn't securely save your session; you may need to sign in again next launch."
+        }
     }
 
-    private func loadSession() -> SavedSession? {
+    func loadSession() -> SavedSession? {
         let d = Self.defaults
         guard
             let hs  = d.string(forKey: key("homeserver")),
@@ -1457,8 +1632,12 @@ public final class AppState {
         if let kc = ParlotteKeychain.get(key("accessToken")) {
             token = kc
         } else if let legacy = d.string(forKey: key("accessToken")) {
-            ParlotteKeychain.set(legacy, account: key("accessToken"))
-            d.removeObject(forKey: key("accessToken"))
+            // Migrate the legacy plaintext token — but keep it until the
+            // Keychain write is confirmed, or a failed migration would destroy
+            // the only copy and silently log the user out.
+            if ParlotteKeychain.set(legacy, account: key("accessToken")) {
+                d.removeObject(forKey: key("accessToken"))
+            }
             token = legacy
         } else {
             return nil
@@ -1471,7 +1650,7 @@ public final class AppState {
         )
     }
 
-    private func clearSavedSession() {
+    func clearSavedSession() {
         let d = Self.defaults
         d.removeObject(forKey: key("homeserver"))
         d.removeObject(forKey: key("userId"))
@@ -1480,7 +1659,7 @@ public final class AppState {
         ParlotteKeychain.remove(key("accessToken"))
     }
 
-    private struct SavedOidcSession {
+    struct SavedOidcSession {
         let homeserverURL: String
         let userId: String
         let deviceId: String
@@ -1489,7 +1668,7 @@ public final class AppState {
         let clientId: String
     }
 
-    private func saveOidcSession(_ data: OidcSessionData?, homeserverURL: String) {
+    func saveOidcSession(_ data: OidcSessionData?, homeserverURL: String) {
         guard let data else { return }
         let d = Self.defaults
         d.set(homeserverURL, forKey: key("oidc.homeserver"))
@@ -1499,17 +1678,26 @@ public final class AppState {
         // Access + refresh tokens live in the Keychain. The OIDC refresh
         // token is especially sensitive: it's long-lived and grants full
         // account access without re-auth.
-        ParlotteKeychain.set(data.accessToken, account: key("oidc.accessToken"))
-        d.removeObject(forKey: key("oidc.accessToken"))
+        let accessOk = ParlotteKeychain.set(data.accessToken, account: key("oidc.accessToken"))
+        if accessOk {
+            d.removeObject(forKey: key("oidc.accessToken"))
+        }
+        var refreshOk = true
         if let refresh = data.refreshToken {
-            ParlotteKeychain.set(refresh, account: key("oidc.refreshToken"))
+            refreshOk = ParlotteKeychain.set(refresh, account: key("oidc.refreshToken"))
         } else {
             ParlotteKeychain.remove(key("oidc.refreshToken"))
         }
         d.removeObject(forKey: key("oidc.refreshToken"))
+        if !accessOk || !refreshOk {
+            // A failed write of a rotated OIDC token is unrecoverable: MAS
+            // invalidates the old refresh token on use, so the next launch
+            // would restore with a dead token. Warn rather than fail silently.
+            errorMessage = "Couldn't securely save your session; you may need to sign in again next launch."
+        }
     }
 
-    private func loadOidcSession() -> SavedOidcSession? {
+    func loadOidcSession() -> SavedOidcSession? {
         let d = Self.defaults
         guard
             let hs       = d.string(forKey: key("oidc.homeserver")),
@@ -1521,8 +1709,9 @@ public final class AppState {
         if let kc = ParlotteKeychain.get(key("oidc.accessToken")) {
             token = kc
         } else if let legacy = d.string(forKey: key("oidc.accessToken")) {
-            ParlotteKeychain.set(legacy, account: key("oidc.accessToken"))
-            d.removeObject(forKey: key("oidc.accessToken"))
+            if ParlotteKeychain.set(legacy, account: key("oidc.accessToken")) {
+                d.removeObject(forKey: key("oidc.accessToken"))
+            }
             token = legacy
         } else {
             return nil
@@ -1531,8 +1720,9 @@ public final class AppState {
         if let kc = ParlotteKeychain.get(key("oidc.refreshToken")) {
             refresh = kc
         } else if let legacy = d.string(forKey: key("oidc.refreshToken")) {
-            ParlotteKeychain.set(legacy, account: key("oidc.refreshToken"))
-            d.removeObject(forKey: key("oidc.refreshToken"))
+            if ParlotteKeychain.set(legacy, account: key("oidc.refreshToken")) {
+                d.removeObject(forKey: key("oidc.refreshToken"))
+            }
             refresh = legacy
         } else {
             refresh = nil
@@ -1547,7 +1737,7 @@ public final class AppState {
         )
     }
 
-    private func clearSavedOidcSession() {
+    func clearSavedOidcSession() {
         let d = Self.defaults
         d.removeObject(forKey: key("oidc.homeserver"))
         d.removeObject(forKey: key("oidc.userId"))
@@ -1696,6 +1886,12 @@ private final class SyncUpdateHandler: ParlotteSyncListener, @unchecked Sendable
         Task { @MainActor [weak appState] in
             guard let appState else { return }
             appState.handleTypingUpdate(roomId: roomId, userIds: userIds)
+        }
+    }
+
+    func onSyncStopped(error: String?) {
+        Task { @MainActor [weak appState] in
+            await appState?.handleSyncStopped(error: error)
         }
     }
 }

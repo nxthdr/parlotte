@@ -86,10 +86,12 @@ struct AppStateEdgeCaseTests {
         #expect(appState.isLoadingMoreMessages == true)
     }
 
-    @Test("loadMoreMessages clears pagination state when every older message is a duplicate")
-    mutating func loadMoreMessagesAllDuplicates() async {
+    @Test("loadMoreMessages keeps paginating on an all-duplicate page that still has a token")
+    mutating func loadMoreMessagesAllDuplicatesWithToken() async {
         await seedEndToken()
-        // Server returns the same seed message back — all duplicates.
+        // Server returns only duplicates, but still offers a next token — the
+        // timeline grew between the initial fetch and this call. We must NOT
+        // treat "nothing new" as "no more history": advance to the token.
         mock.messagesResult = MessageBatch(
             messages: [makeMessage(eventId: "$seed:example.com")],
             endToken: "tok-2"
@@ -97,12 +99,59 @@ struct AppStateEdgeCaseTests {
 
         await appState.loadMoreMessages()
 
+        #expect(appState.hasMoreMessages == true)
+        // The cursor advanced, so a further call does hit the network again.
+        mock.messagesCalls.removeAll()
+        await appState.loadMoreMessages()
+        #expect(mock.messagesCalls.first?.from == "tok-2")
+    }
+
+    @Test("loadMoreMessages stops paginating only when the server returns no token")
+    mutating func loadMoreMessagesStopsOnNilToken() async {
+        await seedEndToken()
+        mock.messagesResult = MessageBatch(
+            messages: [makeMessage(eventId: "$older:example.com")],
+            endToken: nil
+        )
+
+        await appState.loadMoreMessages()
+
         #expect(appState.hasMoreMessages == false)
-        // Implementation sets messageEndToken = nil; verify by checking that
-        // a second call is now a no-op (the guard fires on nil token).
+        // nil token ends history: a second call is a no-op (guard fires).
         mock.messagesCalls.removeAll()
         await appState.loadMoreMessages()
         #expect(mock.messagesCalls.isEmpty)
+    }
+
+    // MARK: - appendNewMessages edit echo
+
+    @Test("appendNewMessages applies a formatted-only edit echo")
+    mutating func appendNewMessagesAppliesFormattedEdit() async {
+        // Mirrors an optimistic edit: body set, formattedBody cleared, isEdited
+        // true. The server echo has the same body/isEdited but a rich
+        // formattedBody — it must replace the plain optimistic version.
+        let optimistic = MessageInfo(
+            eventId: "$e:example.com", sender: "@me:x.com", body: "hello",
+            formattedBody: nil, messageType: "text", timestampMs: 1_700_000_000_000,
+            isEdited: true, repliedToEventId: nil, mediaSource: nil, mediaMimeType: nil,
+            mediaWidth: nil, mediaHeight: nil, mediaSize: nil, reactions: []
+        )
+        appState.messages = [optimistic]
+
+        let serverEcho = MessageInfo(
+            eventId: "$e:example.com", sender: "@me:x.com", body: "hello",
+            formattedBody: "<strong>hello</strong>", messageType: "text",
+            timestampMs: 1_700_000_000_000, isEdited: true, repliedToEventId: nil,
+            mediaSource: nil, mediaMimeType: nil, mediaWidth: nil, mediaHeight: nil,
+            mediaSize: nil, reactions: []
+        )
+        mock.messagesResult = MessageBatch(messages: [serverEcho], endToken: nil)
+
+        await appState.appendNewMessages()
+
+        #expect(appState.messages.count == 1)
+        #expect(appState.messages[0].formattedBody == "<strong>hello</strong>",
+                "formatted-only edit echo should be applied")
     }
 
     // MARK: - toggleReaction

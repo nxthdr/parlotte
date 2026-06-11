@@ -229,4 +229,23 @@ struct AppStateNotificationTests {
 
         #expect(dispatcher.postedNotifications.isEmpty)
     }
+
+    @Test("Selected room with steady unread does not re-notify on every tick")
+    mutating func selectedRoomNoDuplicateNotifications() async {
+        // App backgrounded so the selected room is a notification candidate;
+        // its read receipt hasn't propagated yet, so the server keeps reporting
+        // a nonzero unread count across ticks.
+        appState.isAppActiveProvider = { false }
+        appState.selectedRoomId = "!sel:x.com"
+        await appState.roomRefreshTask?.value
+        dispatcher.postedNotifications.removeAll()
+
+        mock.roomsResult = [room(id: "!sel:x.com", name: "Sel", unread: 5)]
+        _ = await appState.refreshRooms() // first sight: no prior count, no notify
+        _ = await appState.refreshRooms() // steady count: must not notify again
+
+        let selNotifs = dispatcher.postedNotifications.filter { $0.roomId == "!sel:x.com" }
+        #expect(selNotifs.isEmpty,
+                "a steady server unread must not produce a notification every tick")
+    }
 }

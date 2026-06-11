@@ -71,7 +71,10 @@ public enum HtmlSanitizer {
         "svg", "math", "template", "noscript",
     ]
 
-    /// Tags we keep (attributes are stripped except for a safe subset on `a`).
+    /// Tags we keep. Re-emitted with **all attributes dropped** — inline
+    /// `style`/`background` on an allowed tag would otherwise make the
+    /// renderer fetch CSS `url()` resources. The only attribute that
+    /// survives is a scheme-validated `href` on `a`.
     /// This matches the Matrix spec's `formatted_body` allowlist, minus
     /// `img` (NSAttributedString fetches the URL) and the wrappers we handle
     /// ourselves (`html`, `body`).
@@ -111,42 +114,19 @@ public enum HtmlSanitizer {
             )
         }
 
-        // 2. Strip every <img ...> — NSAttributedString would fetch `src`.
-        s = s.replacingOccurrences(
-            of: "<\\s*img\\b[^>]*/?>",
-            with: "",
-            options: [.regularExpression, .caseInsensitive]
-        )
-        // `<link>` and `<meta>` would pull in external resources too.
-        s = s.replacingOccurrences(
-            of: "<\\s*(link|meta|base)\\b[^>]*/?>",
-            with: "",
-            options: [.regularExpression, .caseInsensitive]
-        )
-
-        // 3. Strip any `on*=` event handler attributes on remaining tags.
-        s = s.replacingOccurrences(
-            of: "\\s+on[a-zA-Z]+\\s*=\\s*(\"[^\"]*\"|'[^']*'|[^\\s>]+)",
-            with: "",
-            options: .regularExpression
-        )
-
-        // 4. Neutralise unsafe URL schemes in href attributes.
-        s = s.replacingOccurrences(
-            of: "(href\\s*=\\s*)([\"'])\\s*(javascript|data|vbscript|file|about|chrome):[^\"']*([\"'])",
-            with: "$1$2#$4",
-            options: [.regularExpression, .caseInsensitive]
-        )
-
-        // 5. Drop any remaining tag that isn't on the allowlist, keeping
-        //    inner text. We look for `<tagname` — if the tag isn't allowed,
-        //    remove just the `<...>` marker.
-        s = removeDisallowedTags(s)
+        // 2. Re-emit allowed tags stripped of every attribute (except a
+        //    validated href on `a`); drop disallowed tags, keeping inner
+        //    text. Attribute stripping is what prevents inline `style=`/
+        //    `background=` from triggering CSS url() fetches, and it
+        //    subsumes `on*` handlers and unsafe href schemes — including
+        //    entity-encoded ones, since the scheme check runs on the raw
+        //    (undecoded) text and only ASCII-letter schemes pass.
+        s = rebuildAllowedTags(s)
 
         return s
     }
 
-    private static func removeDisallowedTags(_ html: String) -> String {
+    private static func rebuildAllowedTags(_ html: String) -> String {
         var out = ""
         out.reserveCapacity(html.count)
         var i = html.startIndex
@@ -166,14 +146,51 @@ public enum HtmlSanitizer {
                 continue
             }
             let tagText = html[html.index(after: i)..<gt]
+            let isClosing = tagText.first == "/"
             let name = extractTagName(tagText)
             if allowedTags.contains(name) {
-                out.append(contentsOf: html[i...gt])
+                if isClosing {
+                    out.append("</\(name)>")
+                } else if name == "a", let href = safeHref(in: tagText) {
+                    out.append("<a href=\"\(href)\">")
+                } else {
+                    out.append("<\(name)>")
+                }
             }
             // else: drop the tag, keep surrounding text.
             i = html.index(after: gt)
         }
         return out
+    }
+
+    /// Extract the href value from an `<a ...>` tag body and return it only
+    /// if it carries an explicit, allowlisted scheme. The check runs on the
+    /// raw attribute text: `&#106;avascript:` or `%6aavascript:` never
+    /// matches a pure-ASCII-letter scheme, so encoded schemes are rejected
+    /// before the HTML parser gets a chance to decode them.
+    private static func safeHref(in tag: Substring) -> String? {
+        guard let range = tag.range(
+            of: "href\\s*=\\s*(\"[^\"]*\"|'[^']*'|[^\\s>]+)",
+            options: [.regularExpression, .caseInsensitive]
+        ) else { return nil }
+
+        guard let eq = tag[range].firstIndex(of: "=") else { return nil }
+        var value = tag[tag.index(after: eq)..<range.upperBound]
+            .trimmingCharacters(in: .whitespaces)
+        if (value.hasPrefix("\"") && value.hasSuffix("\"") && value.count >= 2)
+            || (value.hasPrefix("'") && value.hasSuffix("'") && value.count >= 2)
+        {
+            value = String(value.dropFirst().dropLast())
+        }
+
+        guard let colon = value.firstIndex(of: ":") else { return nil }
+        let scheme = value[..<colon].lowercased()
+        guard scheme.allSatisfy({ $0.isLetter }), safeHrefSchemes.contains(scheme) else {
+            return nil
+        }
+        // No quotes in the re-embedded value — prevents attribute breakout.
+        guard !value.contains("\""), !value.contains("'") else { return nil }
+        return value
     }
 
     private static func extractTagName(_ tag: Substring) -> String {

@@ -104,7 +104,7 @@ struct HtmlSanitizerTests {
     func neutralisesJavascriptHrefs() {
         let out = HtmlSanitizer.sanitize(#"<a href="javascript:alert(1)">click</a>"#)
         #expect(!out.lowercased().contains("javascript:"))
-        #expect(out.contains("#"))
+        #expect(out.contains("click"))
     }
 
     @Test("Strips unknown tags but keeps inner text")
@@ -112,5 +112,79 @@ struct HtmlSanitizerTests {
         let out = HtmlSanitizer.sanitize("<foo>keep me</foo>")
         #expect(!out.contains("<foo>"))
         #expect(out.contains("keep me"))
+    }
+
+    // MARK: - Attribute stripping (CSS url() fetch / IP-leak vectors)
+
+    @Test("Strips inline style attributes from allowed tags")
+    func stripsStyleAttribute() {
+        let out = HtmlSanitizer.sanitize(
+            #"<div style="background:url('https://evil/leak')">hi</div>"#
+        )
+        #expect(!out.contains("style"))
+        #expect(!out.contains("evil"))
+        #expect(out.lowercased().contains("<div>"))
+        #expect(out.contains("hi"))
+    }
+
+    @Test("Strips legacy background attribute on table cells")
+    func stripsBackgroundAttribute() {
+        let out = HtmlSanitizer.sanitize(
+            #"<table><td background="https://evil/x">cell</td></table>"#
+        )
+        #expect(!out.contains("evil"))
+        #expect(out.contains("cell"))
+    }
+
+    @Test("Strips every attribute except href on <a>")
+    func stripsAllOtherAttributes() {
+        let out = HtmlSanitizer.sanitize(
+            #"<span class="x" id="y" data-mx-spoiler title="t">s</span>"#
+        )
+        #expect(out.lowercased().contains("<span>"))
+        #expect(!out.contains("class"))
+        #expect(!out.contains("data-mx"))
+    }
+
+    @Test("Keeps safe hrefs, quoted and single-quoted")
+    func keepsSafeHrefs() {
+        for href in ["https://example.com/x", "mailto:a@b.c", "matrix:r/room:x.y"] {
+            let out = HtmlSanitizer.sanitize("<a href=\"\(href)\">l</a>")
+            #expect(out.contains(href), "dropped safe href \(href): \(out)")
+        }
+        let single = HtmlSanitizer.sanitize("<a href='https://example.com/s'>l</a>")
+        #expect(single.contains("https://example.com/s"))
+    }
+
+    @Test("Rejects entity-encoded and unquoted unsafe schemes")
+    func rejectsEncodedAndUnquotedSchemes() {
+        let cases = [
+            #"<a href="&#106;avascript:alert(1)">x</a>"#,
+            #"<a href=javascript:alert(1)>x</a>"#,
+            #"<a href="data:text/html,<script>">x</a>"#,
+            #"<a href="%6aavascript:alert(1)">x</a>"#,
+            #"<a href="  javascript:alert(1)">x</a>"#,
+        ]
+        for input in cases {
+            let out = HtmlSanitizer.sanitize(input)
+            #expect(!out.contains("href"), "kept unsafe href from: \(input) -> \(out)")
+            #expect(out.contains("x"))
+        }
+    }
+
+    @Test("Rejects hrefs that could break out of the rebuilt attribute")
+    func rejectsQuoteBreakout() {
+        let out = HtmlSanitizer.sanitize(
+            #"<a href='https://ok/" style="background:url(https://evil)'>x</a>"#
+        )
+        #expect(!out.contains("evil"))
+        #expect(!out.contains("style"))
+    }
+
+    @Test("Closing tags are rebuilt clean")
+    func closingTagsClean() {
+        let out = HtmlSanitizer.sanitize(#"<b>x</b foo="bar">"#)
+        #expect(out.contains("</b>"))
+        #expect(!out.contains("foo"))
     }
 }
