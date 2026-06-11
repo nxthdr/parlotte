@@ -2,6 +2,22 @@ import AppKit
 import ParlotteLib
 import SwiftUI
 
+extension Bundle {
+    /// Bundle that carries the app's bundled resources (e.g. the login icon).
+    /// Under SwiftPM (`swift run`) resources live in the generated
+    /// `Bundle.module`; under the xcodegen Xcode project that `archive.sh`
+    /// builds, they're copied into the app's main bundle. `Bundle.module` is
+    /// only synthesised for SwiftPM targets, so referencing it unconditionally
+    /// breaks the Xcode/archive build — gate it on the SwiftPM compiler define.
+    static var appResources: Bundle {
+        #if SWIFT_PACKAGE
+        return .module
+        #else
+        return .main
+        #endif
+    }
+}
+
 struct LoginView: View {
     @Environment(AppState.self) private var appState
     @State private var detectTask: Task<Void, Never>?
@@ -12,7 +28,7 @@ struct LoginView: View {
         @Bindable var appState = appState
 
         VStack(spacing: 24) {
-            if let iconURL = Bundle.module.url(forResource: "parlotte-icon", withExtension: "svg"),
+            if let iconURL = Bundle.appResources.url(forResource: "parlotte-icon", withExtension: "svg"),
                let iconImage = NSImage(contentsOf: iconURL) {
                 Image(nsImage: iconImage)
                     .resizable()
