@@ -79,11 +79,14 @@ targets:
         CFBundlePackageType: APPL
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
         NSHighResolutionCapable: true
-        # The app ships non-exempt encryption (Olm/Megolm E2EE via
-        # matrix-sdk-crypto), so export compliance must be declared.
-        # Requires an annual BIS self-classification report
-        # (https://www.bis.doc.gov, ENC §740.17(b)(3) mass-market).
-        ITSAppUsesNonExemptEncryption: true
+        # Required by the Mac App Store; matches the primary App Store category.
+        LSApplicationCategoryType: public.app-category.social-networking
+        # Export compliance is intentionally NOT declared in the binary
+        # (no ITSAppUsesNonExemptEncryption key). The app uses standard
+        # E2EE (Olm/Megolm) and is open source, so it qualifies for the
+        # encryption exemption — answered per build in App Store Connect
+        # rather than asserted here, which avoids a binary-vs-portal
+        # mismatch at upload time.
         # Allow loopback / .local HTTP so developers can run against a local
         # Synapse without disabling ATS globally. Remote homeservers are
         # expected to use HTTPS.
