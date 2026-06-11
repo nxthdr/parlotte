@@ -11,9 +11,10 @@
     <!-- Inbound loopback listener for the SSO OAuth callback. -->
     <key>com.apple.security.network.server</key>
     <true/>
-    <!-- Attachment picker. Read-only is enough for uploads; we don't save
-         received files to arbitrary user paths yet. -->
-    <key>com.apple.security.files.user-selected.read-only</key>
+    <!-- Attachment picker (upload) and Save panel (download received files to a
+         user-chosen location). Saving via NSSavePanel needs read-write — with
+         read-only the panel appears but the write is denied. -->
+    <key>com.apple.security.files.user-selected.read-write</key>
     <true/>
 </dict>
 </plist>

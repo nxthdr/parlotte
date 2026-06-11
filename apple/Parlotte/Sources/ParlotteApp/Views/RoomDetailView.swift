@@ -266,9 +266,15 @@ struct RoomDetailView: View {
     }
 
     private var messageList: some View {
-        MessageScrollView(
-            lastItemId: appState.visibleMessages.last?.eventId,
-            firstItemId: appState.visibleMessages.first?.eventId,
+        // Snapshot once. `visibleMessages` is a computed property that re-filters
+        // on every access, so enumerating it and *also* subscripting it with
+        // `[index - 1]` can desync (a sync tick or sheet presentation re-renders
+        // mid-flight) and crash with "Index out of range". Bind it to a single
+        // local so the enumerated array and the subscripts are the same value.
+        let visible = appState.visibleMessages
+        return MessageScrollView(
+            lastItemId: visible.last?.eventId,
+            firstItemId: visible.first?.eventId,
             onScrollToTop: {
                 if appState.hasMoreMessages && !appState.isLoadingMoreMessages {
                     Task { await appState.loadMoreMessages() }
@@ -305,11 +311,11 @@ struct RoomDetailView: View {
                     .padding(.vertical, Spacing.md)
                 }
 
-                ForEach(Array(appState.visibleMessages.enumerated()), id: \.element.eventId) { index, message in
+                ForEach(Array(visible.enumerated()), id: \.element.eventId) { index, message in
                     if index == 0 {
                         DateSeparator(timestamp: message.timestampMs)
                     } else {
-                        let prevDate = Self.calendarDay(appState.visibleMessages[index - 1].timestampMs)
+                        let prevDate = Self.calendarDay(visible[index - 1].timestampMs)
                         let thisDate = Self.calendarDay(message.timestampMs)
                         if prevDate != thisDate {
                             DateSeparator(timestamp: message.timestampMs)
@@ -317,8 +323,8 @@ struct RoomDetailView: View {
                     }
 
                     let isGrouped: Bool = {
-                        guard index > 0 else { return false }
-                        let prev = appState.visibleMessages[index - 1]
+                        guard index > 0, index - 1 < visible.count else { return false }
+                        let prev = visible[index - 1]
                         guard prev.sender == message.sender else { return false }
                         // Group if within 5 minutes
                         let gap = message.timestampMs > prev.timestampMs
@@ -336,7 +342,7 @@ struct RoomDetailView: View {
                         isOwnMessage: message.sender == appState.loggedInUserId,
                         isGrouped: isGrouped,
                         repliedMessage: message.repliedToEventId.flatMap { replyId in
-                            appState.visibleMessages.first { $0.eventId == replyId }
+                            visible.first { $0.eventId == replyId }
                         },
                         onReply: {
                             replyingTo = message
@@ -354,7 +360,7 @@ struct RoomDetailView: View {
                 }
 
                 // Empty conversation state
-                if appState.visibleMessages.isEmpty && !appState.hasMoreMessages {
+                if visible.isEmpty && !appState.hasMoreMessages {
                     VStack(spacing: Spacing.md) {
                         Spacer()
                             .frame(height: 80)
