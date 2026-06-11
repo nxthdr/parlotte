@@ -845,6 +845,14 @@ impl ParlotteClientFFI {
         Ok(self.inner.recover(&recovery_key)?)
     }
 
+    pub fn reset_recovery_key(&self) -> Result<String, ParlotteError> {
+        Ok(self.inner.reset_recovery_key()?)
+    }
+
+    pub fn download_room_keys(&self, room_id: String) -> Result<(), ParlotteError> {
+        Ok(self.inner.download_room_keys(&room_id)?)
+    }
+
     pub fn begin_reset_identity(&self) -> Result<Option<String>, ParlotteError> {
         Ok(self.inner.begin_reset_identity()?)
     }

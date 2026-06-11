@@ -60,6 +60,8 @@ public protocol MatrixClientProtocol: Sendable {
     func enableRecovery(passphrase: String?) async throws -> String
     func disableRecovery() async throws
     func recover(recoveryKey: String) async throws
+    func resetRecoveryKey() async throws -> String
+    func downloadRoomKeys(roomId: String) async throws
     func beginResetIdentity() async throws -> String?
     func finishResetIdentity() async throws -> String
     func cancelResetIdentity() async

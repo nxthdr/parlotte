@@ -407,6 +407,20 @@ public actor MatrixClient {
         }.value
     }
 
+    public func resetRecoveryKey() async throws -> String {
+        let ffi = self.ffi
+        return try await runBlocking {
+            try ffi.resetRecoveryKey()
+        }.value
+    }
+
+    public func downloadRoomKeys(roomId: String) async throws {
+        let ffi = self.ffi
+        try await runBlocking {
+            try ffi.downloadRoomKeys(roomId: roomId)
+        }.value
+    }
+
     public func beginResetIdentity() async throws -> String? {
         let ffi = self.ffi
         return try await runBlocking {

@@ -387,6 +387,23 @@ final class MockMatrixClient: MatrixClientProtocol, @unchecked Sendable {
         try errorFor(recoverError)
     }
 
+    var resetRecoveryKeyCalls = 0
+    var resetRecoveryKeyError: Error?
+    var resetRecoveryKeyResult = "Es Tb NEW RECOVERY KEY"
+    var downloadRoomKeysCalls: [String] = []
+    var downloadRoomKeysError: Error?
+
+    func resetRecoveryKey() async throws -> String {
+        try errorFor(resetRecoveryKeyError)
+        resetRecoveryKeyCalls += 1
+        return resetRecoveryKeyResult
+    }
+
+    func downloadRoomKeys(roomId: String) async throws {
+        try errorFor(downloadRoomKeysError)
+        downloadRoomKeysCalls.append(roomId)
+    }
+
     func beginResetIdentity() async throws -> String? {
         beginResetIdentityCalls += 1
         try errorFor(beginResetIdentityError)

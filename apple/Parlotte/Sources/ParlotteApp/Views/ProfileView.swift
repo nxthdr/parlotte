@@ -291,6 +291,12 @@ struct ProfileView: View {
                     }
                     .disabled(appState.isUpdatingRecovery || appState.isResettingIdentity)
                 case .enabled:
+                    Button("New Recovery Key") {
+                        Task { await appState.resetRecoveryKey() }
+                    }
+                    .disabled(appState.isUpdatingRecovery)
+                    .help("Generate a fresh recovery key (the old one stops working). Use this if you lost or never saved your key.")
+
                     Button("Disable", role: .destructive) {
                         Task { await appState.disableRecovery() }
                     }

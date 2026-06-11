@@ -1453,6 +1453,24 @@ public final class AppState {
         return accepted
     }
 
+    /// Rotate the recovery key: generate a fresh one (re-keying secret storage
+    /// under it, keeping identity + backup) and surface it via
+    /// `pendingRecoveryKey` so the UI shows it once to save. Use when the old
+    /// key was lost or is stale.
+    public func resetRecoveryKey() async {
+        guard let client, !isUpdatingRecovery else { return }
+        isUpdatingRecovery = true
+        recoveryErrorMessage = nil
+        do {
+            let key = try await client.resetRecoveryKey()
+            pendingRecoveryKey = key
+            recoveryState = await client.recoveryState()
+        } catch {
+            recoveryErrorMessage = error.displayMessage
+        }
+        isUpdatingRecovery = false
+    }
+
     public func dismissPendingRecoveryKey() {
         pendingRecoveryKey = nil
     }
