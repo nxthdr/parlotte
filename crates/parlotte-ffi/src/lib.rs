@@ -25,6 +25,7 @@ use parlotte_core::{
     ReactionInfo as CoreReactionInfo, RecoveryState as CoreRecoveryState, RoomInfo as CoreRoomInfo,
     RoomMemberInfo as CoreRoomMemberInfo, SessionChangeEvent as CoreSessionChangeEvent,
     SessionInfo as CoreSessionInfo, SsoProvider as CoreSsoProvider, UserProfile as CoreUserProfile,
+    UserSearchResult as CoreUserSearchResult,
     VerificationRequestInfo as CoreVerificationRequestInfo,
     VerificationState as CoreVerificationState,
 };
@@ -282,6 +283,23 @@ impl From<CoreRoomMemberInfo> for RoomMemberInfo {
             avatar_url: m.avatar_url,
             power_level: m.power_level,
             role: m.role,
+        }
+    }
+}
+
+#[derive(uniffi::Record)]
+pub struct UserSearchResult {
+    pub user_id: String,
+    pub display_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+impl From<CoreUserSearchResult> for UserSearchResult {
+    fn from(u: CoreUserSearchResult) -> Self {
+        Self {
+            user_id: u.user_id,
+            display_name: u.display_name,
+            avatar_url: u.avatar_url,
         }
     }
 }
@@ -576,6 +594,23 @@ impl ParlotteClientFFI {
 
     pub fn create_room(&self, name: String, is_public: bool) -> Result<String, ParlotteError> {
         Ok(self.inner.create_room(&name, is_public)?)
+    }
+
+    pub fn create_dm(&self, user_id: String) -> Result<String, ParlotteError> {
+        Ok(self.inner.create_dm(&user_id)?)
+    }
+
+    pub fn search_users(
+        &self,
+        term: String,
+        limit: u64,
+    ) -> Result<Vec<UserSearchResult>, ParlotteError> {
+        Ok(self
+            .inner
+            .search_users(&term, limit)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     pub fn public_rooms(&self) -> Result<Vec<PublicRoomInfo>, ParlotteError> {

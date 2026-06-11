@@ -11,6 +11,8 @@ public protocol MatrixClientProtocol: Sendable {
     func rooms() async throws -> [RoomInfo]
     func syncOnce() async throws
     func createRoom(name: String, isPublic: Bool) async throws -> String
+    func createDm(userId: String) async throws -> String
+    func searchUsers(term: String, limit: UInt64) async throws -> [UserSearchResult]
     func publicRooms() async throws -> [PublicRoomInfo]
     func joinRoom(roomId: String) async throws
     func leaveRoom(roomId: String) async throws

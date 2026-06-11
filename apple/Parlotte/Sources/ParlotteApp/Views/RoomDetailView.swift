@@ -8,7 +8,6 @@ struct RoomDetailView: View {
     @Environment(AppState.self) private var appState
     @State private var messageText = ""
     @State private var showInvite = false
-    @State private var inviteUserId = ""
     @State private var showLeaveConfirm = false
     @State private var showMembers = false
     @State private var showSettings = false
@@ -217,16 +216,27 @@ struct RoomDetailView: View {
                 .padding(.top, Spacing.sm)
             }
         }
-        .alert("Invite User", isPresented: $showInvite) {
-            TextField("@user:server", text: $inviteUserId)
-            Button("Invite") {
-                let userId = inviteUserId
-                inviteUserId = ""
-                Task { await appState.inviteUser(userId: userId) }
+        .sheet(isPresented: $showInvite) {
+            VStack(spacing: 0) {
+                HStack {
+                    Text("Invite User")
+                        .font(.system(size: 16, weight: .semibold))
+                    Spacer()
+                    Button("Done") { showInvite = false }
+                        .buttonStyle(.plain)
+                }
+                .padding(Spacing.lg)
+
+                Divider().opacity(0.5)
+
+                UserSearchPicker(placeholder: "Search by name or @user:server") { userId in
+                    Task { await appState.inviteUser(userId: userId) }
+                    showInvite = false
+                }
+                .padding(Spacing.lg)
             }
-            Button("Cancel", role: .cancel) {
-                inviteUserId = ""
-            }
+            .frame(minWidth: 360, minHeight: 380)
+            .environment(appState)
         }
         .sheet(isPresented: $showMembers) {
             if let roomId = appState.selectedRoomId {

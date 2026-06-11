@@ -12,6 +12,8 @@
 - [x] Room list with public/private/encrypted indicators
 - [x] Sidebar split between "Direct messages" and "Rooms" (Matrix `m.direct`)
 - [x] Create rooms (public or private)
+- [ ] Create direct messages (1:1 room flagged `m.direct`, auto-invite, sorts into DM section)
+- [ ] User directory search / invite autocomplete (`/user_directory/search`, instead of typing full Matrix IDs)
 - [x] Private rooms encrypted by default (Megolm E2EE)
 - [x] Public room directory (explore and join)
 - [x] Invite users to rooms

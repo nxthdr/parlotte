@@ -315,6 +315,25 @@ final class MockMatrixClient: MatrixClientProtocol, @unchecked Sendable {
         createRoomCalls.append((name, isPublic))
         return createRoomResult
     }
+
+    var createDmCalls: [String] = []
+    var createDmError: Error?
+    var createDmResult = "!dm:example.com"
+    var searchUsersCalls: [(term: String, limit: UInt64)] = []
+    var searchUsersError: Error?
+    var searchUsersResult: [UserSearchResult] = []
+
+    func createDm(userId: String) async throws -> String {
+        try errorFor(createDmError)
+        createDmCalls.append(userId)
+        return createDmResult
+    }
+    func searchUsers(term: String, limit: UInt64) async throws -> [UserSearchResult] {
+        try errorFor(searchUsersError)
+        searchUsersCalls.append((term, limit))
+        return searchUsersResult
+    }
+
     func publicRooms() async throws -> [PublicRoomInfo] {
         try errorFor(publicRoomsError)
         publicRoomsCalls += 1

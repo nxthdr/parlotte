@@ -83,6 +83,20 @@ public actor MatrixClient {
         }.value
     }
 
+    public func createDm(userId: String) async throws -> String {
+        let ffi = self.ffi
+        return try await runBlocking {
+            try ffi.createDm(userId: userId)
+        }.value
+    }
+
+    public func searchUsers(term: String, limit: UInt64 = 10) async throws -> [UserSearchResult] {
+        let ffi = self.ffi
+        return try await runBlocking {
+            try ffi.searchUsers(term: term, limit: limit)
+        }.value
+    }
+
     public func publicRooms() async throws -> [PublicRoomInfo] {
         let ffi = self.ffi
         return try await runBlocking {

@@ -49,6 +49,17 @@ pub struct RoomMemberInfo {
     pub role: String,
 }
 
+/// A user returned by the homeserver's user-directory search.
+#[derive(Debug, Clone)]
+pub struct UserSearchResult {
+    /// The Matrix user ID (e.g., `@alice:example.com`).
+    pub user_id: String,
+    /// Display name, if the server exposes one.
+    pub display_name: Option<String>,
+    /// The mxc:// URI of the user's avatar, if any.
+    pub avatar_url: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

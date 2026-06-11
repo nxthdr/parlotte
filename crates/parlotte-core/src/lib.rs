@@ -16,7 +16,7 @@ pub use message::{
     SessionInfo, SsoProvider, UserProfile,
 };
 pub use recovery::RecoveryState;
-pub use room::{PublicRoomInfo, RoomInfo, RoomMemberInfo};
+pub use room::{PublicRoomInfo, RoomInfo, RoomMemberInfo, UserSearchResult};
 pub use session::{SessionChangeEvent, SessionChangeListener};
 pub use sync::SyncListener;
 pub use verification::{

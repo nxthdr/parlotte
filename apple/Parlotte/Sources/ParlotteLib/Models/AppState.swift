@@ -932,6 +932,32 @@ public final class AppState {
         }
     }
 
+    /// Create (or reuse) a 1:1 direct message with `userId`, refresh the room
+    /// list, and select the new room. Returns the room ID, or nil on failure.
+    @discardableResult
+    public func createDirectMessage(userId: String) async -> String? {
+        guard let client else { return nil }
+        do {
+            let roomId = try await client.createDm(userId: userId)
+            await refreshRooms()
+            selectedRoomId = roomId
+            return roomId
+        } catch {
+            errorMessage = error.displayMessage
+            return nil
+        }
+    }
+
+    /// Search the homeserver's user directory. Returns [] on empty input or
+    /// failure — search errors are non-fatal and shouldn't hijack the global
+    /// error banner while the user is typing.
+    public func searchUsers(term: String, limit: UInt64 = 10) async -> [UserSearchResult] {
+        guard let client else { return [] }
+        let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        return (try? await client.searchUsers(term: trimmed, limit: limit)) ?? []
+    }
+
     public func fetchPublicRooms() async -> [PublicRoomInfo] {
         guard let client else { return [] }
         do {

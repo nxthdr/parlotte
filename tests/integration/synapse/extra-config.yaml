@@ -4,6 +4,12 @@ enable_registration: true
 enable_registration_without_verification: true
 suppress_key_server_warning: true
 
+# Make the user directory return all users (not just those sharing a room),
+# so user-search integration tests are deterministic.
+user_directory:
+  enabled: true
+  search_all_users: true
+
 # Allow room directory publication
 allow_public_rooms_without_auth: true
 allow_public_rooms_over_federation: false

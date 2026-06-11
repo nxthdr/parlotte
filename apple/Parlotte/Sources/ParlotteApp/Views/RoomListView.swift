@@ -5,6 +5,7 @@ import SwiftUI
 struct RoomListView: View {
     @Environment(AppState.self) private var appState
     @State private var showCreateRoom = false
+    @State private var showNewDM = false
     @State private var showExploreRooms = false
     @State private var showProfile = false
 
@@ -98,6 +99,14 @@ struct RoomListView: View {
                 .buttonStyle(.plain)
                 .help("Create Room")
 
+                Button { showNewDM = true } label: {
+                    Image(systemName: "square.and.pencil")
+                        .font(.body)
+                        .foregroundStyle(AppColor.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .help("New Direct Message")
+
                 Button { showExploreRooms = true } label: {
                     Image(systemName: "globe")
                         .font(.body)
@@ -132,6 +141,10 @@ struct RoomListView: View {
         }
         .sheet(isPresented: $showCreateRoom) {
             CreateRoomView()
+                .environment(appState)
+        }
+        .sheet(isPresented: $showNewDM) {
+            NewDirectMessageView()
                 .environment(appState)
         }
         .sheet(isPresented: $showExploreRooms) {
