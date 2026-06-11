@@ -81,12 +81,14 @@ targets:
         NSHighResolutionCapable: true
         # Required by the Mac App Store; matches the primary App Store category.
         LSApplicationCategoryType: public.app-category.social-networking
-        # Export compliance is intentionally NOT declared in the binary
-        # (no ITSAppUsesNonExemptEncryption key). The app uses standard
-        # E2EE (Olm/Megolm) and is open source, so it qualifies for the
-        # encryption exemption — answered per build in App Store Connect
-        # rather than asserted here, which avoids a binary-vs-portal
-        # mismatch at upload time.
+        # Export compliance: the app's encryption is EXEMPT, so this is false.
+        # Parlotte uses only standard, published algorithms (Olm/Megolm:
+        # Curve25519, AES, HMAC-SHA256) and ships as open source (MIT, public
+        # repo), qualifying for the encryption exemption (EAR Cat. 5 Pt. 2,
+        # publicly-available source). Declaring it here makes App Store Connect
+        # auto-mark the build compliant — no per-build questionnaire or export
+        # documentation upload.
+        ITSAppUsesNonExemptEncryption: false
         # Allow loopback / .local HTTP so developers can run against a local
         # Synapse without disabling ATS globally. Remote homeservers are
         # expected to use HTTPS.
