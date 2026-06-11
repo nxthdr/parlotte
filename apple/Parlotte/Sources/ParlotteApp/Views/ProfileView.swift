@@ -36,12 +36,10 @@ struct ProfileView: View {
             }
         }
         .sheet(isPresented: $isShowingRecoveryEntry) {
-            RecoveryKeyEntrySheet { key in
-                isShowingRecoveryEntry = false
-                Task { await appState.recover(recoveryKey: key) }
-            } onCancel: {
+            RecoveryKeyEntrySheet {
                 isShowingRecoveryEntry = false
             }
+            .environment(appState)
         }
         .sheet(isPresented: Binding(
             get: { appState.resetIdentityApprovalUrl != nil },
@@ -501,11 +499,32 @@ private struct RecoveryKeyDisplaySheet: View {
     }
 }
 
+/// Recovery-key entry. Drives `appState.recover` itself and stays open to
+/// report the outcome — so the user gets clear feedback on whether the key was
+/// accepted, rather than the sheet vanishing before recovery finishes.
 struct RecoveryKeyEntrySheet: View {
-    let onSubmit: (String) -> Void
-    let onCancel: () -> Void
+    @Environment(AppState.self) private var appState
+    /// Called to dismiss (on cancel or after a successful unlock).
+    let onClose: () -> Void
 
     @State private var recoveryKey = ""
+    @State private var phase: Phase = .idle
+
+    private enum Phase: Equatable {
+        case idle
+        case working
+        case succeeded
+        case failed(String)
+    }
+
+    private var trimmedKey: String {
+        recoveryKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isFailed: Bool {
+        if case .failed = phase { return true }
+        return false
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.lg) {
@@ -522,22 +541,65 @@ struct RecoveryKeyEntrySheet: View {
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 13, design: .monospaced))
                 .lineLimit(3...5)
+                .disabled(phase == .working || phase == .succeeded)
+
+            statusLine
 
             HStack {
-                Button("Cancel", role: .cancel) { onCancel() }
+                Button("Cancel", role: .cancel) { onClose() }
                     .keyboardShortcut(.cancelAction)
+                    .disabled(phase == .working)
                 Spacer()
-                Button("Unlock") {
-                    let trimmed = recoveryKey.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !trimmed.isEmpty else { return }
-                    onSubmit(trimmed)
+                Button(isFailed ? "Try Again" : "Unlock") {
+                    Task { await unlock() }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(recoveryKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(trimmedKey.isEmpty || phase == .working || phase == .succeeded)
             }
         }
         .padding(Spacing.xxl)
         .frame(width: 420)
+    }
+
+    @ViewBuilder
+    private var statusLine: some View {
+        switch phase {
+        case .idle:
+            EmptyView()
+        case .working:
+            HStack(spacing: Spacing.sm) {
+                ProgressView().controlSize(.small)
+                Text("Checking your recovery key…")
+                    .font(.system(size: 12))
+                    .foregroundStyle(AppColor.textSecondary)
+            }
+        case .succeeded:
+            Label("Recovery key accepted — restoring your encrypted history.",
+                  systemImage: "checkmark.circle.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(.green)
+                .fixedSize(horizontal: false, vertical: true)
+        case .failed(let message):
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func unlock() async {
+        guard !trimmedKey.isEmpty else { return }
+        phase = .working
+        let accepted = await appState.recover(recoveryKey: trimmedKey)
+        if accepted {
+            phase = .succeeded
+            // Brief confirmation, then close.
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            onClose()
+        } else {
+            phase = .failed(appState.recoveryErrorMessage
+                ?? "That recovery key wasn't accepted. Check for typos and try again.")
+        }
     }
 }
 

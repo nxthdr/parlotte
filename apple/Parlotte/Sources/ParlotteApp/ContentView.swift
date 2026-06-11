@@ -95,12 +95,10 @@ struct MainView: View {
             get: { appState.isPromptingRecoveryEntry },
             set: { appState.isPromptingRecoveryEntry = $0 }
         )) {
-            RecoveryKeyEntrySheet { key in
-                appState.isPromptingRecoveryEntry = false
-                Task { await appState.recover(recoveryKey: key) }
-            } onCancel: {
+            RecoveryKeyEntrySheet {
                 appState.isPromptingRecoveryEntry = false
             }
+            .environment(appState)
         }
         .confirmationDialog(
             "Log out without encrypted backup?",

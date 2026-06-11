@@ -1501,14 +1501,29 @@ struct AppStateTests {
         #expect(appState.recoveryState == .disabled)
     }
 
-    @Test("recover passes the key to the client")
+    @Test("recover passes the key to the client and reports acceptance")
     mutating func recoverForwardsKey() async {
         mock.recoveryStateResult = .enabled
 
-        await appState.recover(recoveryKey: "Es Tb USER ENTERED KEY")
+        let accepted = await appState.recover(recoveryKey: "Es Tb USER ENTERED KEY")
 
+        #expect(accepted == true)
         #expect(mock.recoverCalls == ["Es Tb USER ENTERED KEY"])
         #expect(appState.recoveryState == .enabled)
+        #expect(appState.isPromptingRecoveryEntry == false)
+    }
+
+    @Test("recover reports rejection and sets an error on a bad key")
+    mutating func recoverRejectsBadKey() async {
+        appState.isPromptingRecoveryEntry = true
+        mock.recoverError = ParlotteError.Auth(message: "That recovery key wasn't accepted.")
+
+        let accepted = await appState.recover(recoveryKey: "wrong key")
+
+        #expect(accepted == false)
+        #expect(appState.recoveryErrorMessage != nil)
+        // A rejected key must not dismiss the prompt — the user retries.
+        #expect(appState.isPromptingRecoveryEntry == true)
     }
 
     @Test("dismissPendingRecoveryKey clears the stored key")

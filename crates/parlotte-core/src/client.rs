@@ -1791,11 +1791,17 @@ impl ParlotteClient {
         let client = self.client();
         self.runtime.block_on(async {
             let recovery = client.encryption().recovery();
+            // A failure here almost always means the key didn't open secret
+            // storage — i.e. it's the wrong key or has a typo. Surface that
+            // plainly so the UI can distinguish "bad key" from "key fine but
+            // backup incomplete" (the state check below).
             recovery
                 .recover(recovery_key)
                 .await
-                .map_err(|e| ParlotteError::Auth {
-                    message: format!("failed to recover: {e}"),
+                .map_err(|_| ParlotteError::Auth {
+                    message: "That recovery key wasn't accepted. Check for typos \
+                              (it's four-letter groups) and try again."
+                        .to_string(),
                 })?;
 
             // `recover()` can return Ok after "opening" secret storage even
@@ -1816,6 +1822,30 @@ impl ParlotteClient {
                 });
             }
             Ok(())
+        })
+    }
+
+    /// Download all of a room's megolm keys from the server-side key backup.
+    /// matrix-sdk downloads keys on demand in the background when it hits an
+    /// undecryptable event, but already-fetched history isn't retroactively
+    /// re-decrypted — so after recovery (or when a room shows "unable to
+    /// decrypt" events) call this, then re-fetch the room, to retroactively
+    /// decrypt history.
+    pub fn download_room_keys(&self, room_id: &str) -> Result<()> {
+        let client = self.client();
+        self.runtime.block_on(async {
+            let room_id = <&RoomId>::try_from(room_id).map_err(|e| ParlotteError::Room {
+                message: format!("invalid room ID: {e}"),
+            })?;
+
+            client
+                .encryption()
+                .backups()
+                .download_room_keys_for_room(room_id)
+                .await
+                .map_err(|e| ParlotteError::Unknown {
+                    message: format!("failed to download room keys from backup: {e}"),
+                })
         })
     }
 

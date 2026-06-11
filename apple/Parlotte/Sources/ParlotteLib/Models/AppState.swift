@@ -1421,14 +1421,23 @@ public final class AppState {
         isUpdatingRecovery = false
     }
 
-    public func recover(recoveryKey: String) async {
-        guard let client, !isUpdatingRecovery else { return }
+    /// Attempt recovery with the given key. Returns `true` if the key was
+    /// accepted (secret storage opened and recovery is now enabled); `false`
+    /// if it was rejected (wrong key / typo) or the backup is incomplete —
+    /// in which case `recoveryErrorMessage` holds a user-facing explanation.
+    /// A `true` result means the *key* is valid; some history may still be
+    /// undecryptable if those keys aren't in the backup.
+    @discardableResult
+    public func recover(recoveryKey: String) async -> Bool {
+        guard let client, !isUpdatingRecovery else { return false }
         isUpdatingRecovery = true
         recoveryErrorMessage = nil
+        var accepted = false
         do {
             try await client.recover(recoveryKey: recoveryKey)
             recoveryState = await client.recoveryState()
             isPromptingRecoveryEntry = false
+            accepted = true
             // Recovery imports the backup decryption key; the room (megolm)
             // keys then download from the server-side key backup. Sync and
             // re-fetch so messages that were "Unable to decrypt" pick up the
@@ -1441,6 +1450,7 @@ public final class AppState {
             recoveryErrorMessage = error.displayMessage
         }
         isUpdatingRecovery = false
+        return accepted
     }
 
     public func dismissPendingRecoveryKey() {
