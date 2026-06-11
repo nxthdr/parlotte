@@ -45,3 +45,6 @@ apple/Parlotte/Config.xcconfig
 
 # Compiled skill tools
 .claude/skills/ax-inspect
+
+# App Store Connect API credentials (scripts/upload.sh)
+apple/Parlotte/AppStoreConnect.local

@@ -1,0 +1,10 @@
+# App Store Connect API credentials for scripts/upload.sh.
+# Copy this file to AppStoreConnect.local (gitignored) and fill in the IDs.
+# These IDs are not secret; the actual secret is the .p8 key, which lives in
+# ~/.appstoreconnect/private_keys/AuthKey_<KEYID>.p8 and is never committed.
+
+# Key ID (e.g. ABC123DEF4) — shown next to the key in App Store Connect.
+export ASC_KEY_ID=YOUR_KEY_ID
+
+# Issuer ID (a UUID) — shown at the top of the App Store Connect API page.
+export ASC_ISSUER_ID=YOUR_ISSUER_ID
