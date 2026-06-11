@@ -45,12 +45,16 @@ fi
 cd "$APPLE_DIR"
 
 echo "Archiving Parlotte..."
+# -allowProvisioningUpdates lets xcodebuild register the App ID and create the
+# distribution provisioning profile automatically against the signed-in
+# account, instead of failing with "No profiles for 'dev.nxthdr.Parlotte'".
 xcodebuild archive \
     -project Parlotte.xcodeproj \
     -scheme Parlotte \
     -configuration Release \
     -archivePath "$ARCHIVE_PATH" \
-    -destination 'generic/platform=macOS'
+    -destination 'generic/platform=macOS' \
+    -allowProvisioningUpdates
 
 # Export options for Mac App Store upload. Pre-generated via:
 #   xcodebuild -exportArchive -exportOptionsPlist <stub>
@@ -77,7 +81,8 @@ echo "Exporting archive..."
 xcodebuild -exportArchive \
     -archivePath "$ARCHIVE_PATH" \
     -exportPath "$EXPORT_PATH" \
-    -exportOptionsPlist "$EXPORT_OPTIONS"
+    -exportOptionsPlist "$EXPORT_OPTIONS" \
+    -allowProvisioningUpdates
 
 echo ""
 echo "Archive: $ARCHIVE_PATH"
