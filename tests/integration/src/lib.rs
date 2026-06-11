@@ -954,6 +954,87 @@ mod tests {
         );
     }
 
+    // -- Test: Create a direct message (m.direct, encrypted, is_direct) --
+
+    #[test]
+    fn create_direct_message() {
+        require_synapse();
+        let (alice, _alice_id) = register_and_login("dm_alice");
+        let (bob, bob_id) = register_and_login("dm_bob");
+
+        let room_id = alice.create_dm(&bob_id).unwrap();
+        alice.sync_once().unwrap();
+
+        // The room must be flagged as a direct message and encrypted.
+        let rooms = alice.rooms().unwrap();
+        let dm = rooms
+            .iter()
+            .find(|r| r.id == room_id)
+            .expect("DM should appear in alice's room list");
+        assert!(dm.is_direct, "DM must be flagged m.direct");
+        assert!(dm.is_encrypted, "DM should be encrypted by default");
+
+        // Bob should receive the invite to the DM.
+        bob.sync_once().unwrap();
+        let bob_rooms = bob.rooms().unwrap();
+        assert!(
+            bob_rooms.iter().any(|r| r.id == room_id),
+            "bob should see the DM invite"
+        );
+    }
+
+    // -- Test: User directory search finds a registered user --
+
+    #[test]
+    fn search_users_finds_registered_user() {
+        require_synapse();
+        // Register the searchee with a distinctive localpart so the directory
+        // match is unambiguous.
+        let (target, target_id) = register_and_login("searchtarget");
+        target.sync_once().unwrap();
+
+        let (searcher, _id) = register_and_login("searcher");
+
+        // The user directory is populated by a background process, so retry a
+        // few times to absorb indexing lag.
+        let mut found = false;
+        for _ in 0..10 {
+            let results = searcher.search_users("searchtarget", 10).unwrap();
+            if results.iter().any(|u| u.user_id == target_id) {
+                found = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        assert!(found, "search should find the registered target user");
+    }
+
+    // -- Test: Dropping the client with sync active must not abort --
+
+    #[test]
+    fn dropping_client_with_active_sync_does_not_panic() {
+        use std::sync::Arc;
+        require_synapse();
+        let (client, _id) = register_and_login("drop_active_sync");
+
+        struct NoopListener;
+        impl parlotte_core::SyncListener for NoopListener {
+            fn on_sync_update(&self) {}
+        }
+
+        client.sync_once().unwrap();
+        client.start_sync(Arc::new(NoopListener)).unwrap();
+        // Let the loop get in-flight (so its Client clone is live).
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        // Drop WITHOUT calling stop_sync() — this is the teardown path that
+        // aborted the process: the SQLite store was dropped after the runtime,
+        // outside a reactor. If Drop panics/aborts, the test process dies and
+        // the test fails; reaching the assert means teardown was clean.
+        drop(client);
+        assert!(true, "client dropped with active sync without aborting");
+    }
+
     // -- Test: Restarting sync does not leave a second loop running --
 
     #[test]

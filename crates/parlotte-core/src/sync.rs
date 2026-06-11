@@ -84,6 +84,28 @@ impl SyncManager {
         }
     }
 
+    /// Async teardown used from `ParlotteClient`'s `Drop`. Like `stop()`, but
+    /// it also **awaits** the aborted sync task so the `Client` clone captured
+    /// by the sync loop is released here — inside the tokio runtime. The
+    /// matrix-sdk SQLite pool (deadpool) must be dropped with a live reactor;
+    /// dropping it outside the runtime aborts the process. The generation's own
+    /// `Client` clone (`gen.client`) is also dropped at the end of this call,
+    /// still inside the runtime.
+    pub async fn drain(&self) {
+        // Take the generation out before any await so the std Mutex guard is
+        // not held across a suspension point.
+        let gen = { self.current.lock().unwrap().take() };
+        if let Some(gen) = gen {
+            gen.stop_flag.store(true, Ordering::SeqCst);
+            gen.client.remove_event_handler(gen.typing_handle);
+            gen.join.abort();
+            let _ = gen.join.await;
+            if !gen.reported.swap(true, Ordering::SeqCst) {
+                gen.listener.on_sync_stopped(None);
+            }
+        }
+    }
+
     /// Start a persistent sync loop in the background.
     ///
     /// If a previous loop is still running it is stopped first, so this is

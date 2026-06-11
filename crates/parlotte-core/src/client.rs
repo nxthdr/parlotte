@@ -22,7 +22,7 @@ use crate::message::{
     SessionInfo, SsoProvider, UserProfile,
 };
 use crate::recovery::RecoveryState;
-use crate::room::{PublicRoomInfo, RoomInfo, RoomMemberInfo};
+use crate::room::{PublicRoomInfo, RoomInfo, RoomMemberInfo, UserSearchResult};
 use crate::session::{SessionChangeEvent, SessionChangeListener};
 use crate::sync::{SyncListener, SyncManager};
 use crate::verification::{
@@ -1175,6 +1175,54 @@ impl ParlotteClient {
                 })?;
 
             Ok(response.room_id().to_string())
+        })
+    }
+
+    /// Create a direct-message room with another user. The SDK creates an
+    /// encrypted 1:1 room, invites the user, and tags it `m.direct` so it
+    /// sorts into the Direct-messages section. Returns the new room ID.
+    pub fn create_dm(&self, user_id: &str) -> Result<String> {
+        let client = self.client();
+        self.runtime.block_on(async {
+            let user_id =
+                matrix_sdk::ruma::UserId::parse(user_id).map_err(|e| ParlotteError::Room {
+                    message: format!("invalid user ID: {e}"),
+                })?;
+
+            let room = client
+                .create_dm(&user_id)
+                .await
+                .map_err(|e| ParlotteError::Room {
+                    message: format!("failed to create direct message: {e}"),
+                })?;
+
+            Ok(room.room_id().to_string())
+        })
+    }
+
+    /// Search the homeserver's user directory. Returns users the server is
+    /// willing to surface (people you share rooms with, plus public profiles
+    /// depending on server config). `limit` caps the number of results.
+    pub fn search_users(&self, term: &str, limit: u64) -> Result<Vec<UserSearchResult>> {
+        let client = self.client();
+        self.runtime.block_on(async {
+            let response =
+                client
+                    .search_users(term, limit)
+                    .await
+                    .map_err(|e| ParlotteError::Network {
+                        message: format!("user search failed: {e}"),
+                    })?;
+
+            Ok(response
+                .results
+                .into_iter()
+                .map(|u| UserSearchResult {
+                    user_id: u.user_id.to_string(),
+                    display_name: u.display_name,
+                    avatar_url: u.avatar_url.map(|m| m.to_string()),
+                })
+                .collect())
         })
     }
 
@@ -2334,13 +2382,37 @@ fn build_client_metadata(redirect_uri: url::Url) -> Result<ClientMetadata> {
 
 impl Drop for ParlotteClient {
     fn drop(&mut self) {
-        // Drop the inner Client inside the tokio runtime so that deadpool's
-        // SQLite connection pool cleanup has access to a reactor.
-        if let Some(client) = self.inner.take() {
-            self.runtime.block_on(async move {
-                drop(client);
-            });
-        }
+        // The matrix-sdk SQLite store (a deadpool connection pool) must be
+        // dropped with a live tokio reactor, or its cleanup panics and aborts
+        // the process. The store stays alive as long as ANY `Client` clone
+        // exists, so every clone must be released inside the runtime here —
+        // before the `runtime` field is torn down. Clones live in: the primary
+        // `inner` handle, the sync generation + its spawned loop, the
+        // session-change task, and any active verification objects.
+        let inner = self.inner.take();
+        let session_task = self.session_change_task.get_mut().unwrap().take();
+        let sync_manager = &self.sync_manager;
+        let active_verification = self.active_verification.clone();
+
+        self.runtime.block_on(async move {
+            // Stop sync and await the aborted loop so its Client clone is freed.
+            sync_manager.drain().await;
+            // Stop and reap the session-change subscription task likewise.
+            if let Some(task) = session_task {
+                task.abort();
+                let _ = task.await;
+            }
+            // Drop any in-flight verification objects (they may hold crypto
+            // state tied to the client) inside the runtime.
+            {
+                let mut active = active_verification.lock().await;
+                active.request = None;
+                active.sas = None;
+            }
+            // With every other clone released, this drops the last reference,
+            // so the SQLite pool is torn down here, inside the runtime.
+            drop(inner);
+        });
     }
 }
 
@@ -2642,6 +2714,15 @@ mod tests {
         apply_edits(&mut messages, edits);
         assert_eq!(messages[0].body, "legit edit");
         assert!(messages[0].is_edited);
+    }
+
+    #[test]
+    fn create_dm_rejects_invalid_user_id() {
+        let client = ParlotteClient::new("http://localhost:1234", None).unwrap();
+        let result = client.create_dm("not-a-user");
+        let err = result.unwrap_err();
+        assert!(matches!(err, ParlotteError::Room { .. }));
+        assert!(err.to_string().contains("invalid user ID"));
     }
 
     #[test]
