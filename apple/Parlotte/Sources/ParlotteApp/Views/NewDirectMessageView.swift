@@ -16,14 +16,24 @@ struct UserSearchPicker: View {
     @State private var results: [UserSearchResult] = []
     @State private var searchTask: Task<Void, Never>?
     @State private var isSearching = false
+    /// Latches on first selection so a double-tap (e.g. while the DM is being
+    /// created) can't fire `onSelect` twice and create two rooms.
+    @State private var hasSelected = false
+
+    private func select(_ userId: String) {
+        guard !hasSelected else { return }
+        hasSelected = true
+        onSelect(userId)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.sm) {
             TextField(placeholder, text: $term)
                 .textFieldStyle(.roundedBorder)
+                .disabled(hasSelected)
                 .onChange(of: term) { scheduleSearch() }
                 .onSubmit {
-                    if looksLikeUserId(term) { onSelect(term) }
+                    if looksLikeUserId(term) { select(term) }
                 }
 
             if isSearching {
@@ -50,7 +60,7 @@ struct UserSearchPicker: View {
     @ViewBuilder
     private func resultRow(userId: String, displayName: String?) -> some View {
         Button {
-            onSelect(userId)
+            select(userId)
         } label: {
             HStack(spacing: Spacing.md) {
                 MemberAvatar(userId: userId, size: 28)

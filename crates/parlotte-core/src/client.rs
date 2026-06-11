@@ -1189,6 +1189,14 @@ impl ParlotteClient {
                     message: format!("invalid user ID: {e}"),
                 })?;
 
+            // Reuse an existing DM with this user instead of creating a
+            // duplicate — `create_dm` always makes a new room, so without this
+            // a second invocation (or a DM the user already has) produces two
+            // rooms for the same person.
+            if let Some(room) = client.get_dm_room(&user_id) {
+                return Ok(room.room_id().to_string());
+            }
+
             let room = client
                 .create_dm(&user_id)
                 .await
@@ -1845,6 +1853,25 @@ impl ParlotteClient {
                 .await
                 .map_err(|e| ParlotteError::Unknown {
                     message: format!("failed to download room keys from backup: {e}"),
+                })
+        })
+    }
+
+    /// Rotate the recovery key. Generates a fresh recovery key, re-keys secret
+    /// storage, and re-uploads the secrets under it — keeping the existing
+    /// cross-signing identity and key backup. The previous recovery key stops
+    /// working. Use this when the old key was lost or is stale (e.g. it
+    /// predates the current backup). Returns the new key to show once.
+    pub fn reset_recovery_key(&self) -> Result<String> {
+        let client = self.client();
+        self.runtime.block_on(async {
+            client
+                .encryption()
+                .recovery()
+                .reset_key()
+                .await
+                .map_err(|e| ParlotteError::Unknown {
+                    message: format!("failed to reset recovery key: {e}"),
                 })
         })
     }

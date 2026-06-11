@@ -983,6 +983,22 @@ mod tests {
         );
     }
 
+    // -- Test: Creating a DM twice reuses the same room (no duplicate) --
+
+    #[test]
+    fn create_dm_twice_reuses_room() {
+        require_synapse();
+        let (alice, _alice_id) = register_and_login("dmdup_alice");
+        let (_bob, bob_id) = register_and_login("dmdup_bob");
+
+        let first = alice.create_dm(&bob_id).unwrap();
+        alice.sync_once().unwrap();
+        // A second create for the same user must return the existing DM, not a
+        // new room.
+        let second = alice.create_dm(&bob_id).unwrap();
+        assert_eq!(first, second, "second create_dm should reuse the existing DM");
+    }
+
     // -- Test: User directory search finds a registered user --
 
     #[test]
