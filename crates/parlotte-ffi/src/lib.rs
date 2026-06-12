@@ -1191,8 +1191,8 @@ mod tests {
         let core = CoreMessageBatch {
             messages: vec![CoreMessageInfo {
                 item_id: "$1:x.com".into(),
-            send_state: String::new(),
-            event_id: "$1:x.com".into(),
+                send_state: String::new(),
+                event_id: "$1:x.com".into(),
                 sender: "@a:x.com".into(),
                 body: "msg".into(),
                 formatted_body: None,

@@ -1196,12 +1196,7 @@ impl ParlotteClient {
     }
 
     /// Send a reply to `in_reply_to` in the active room (local echo).
-    pub fn timeline_send_reply(
-        &self,
-        room_id: &str,
-        in_reply_to: &str,
-        body: &str,
-    ) -> Result<()> {
+    pub fn timeline_send_reply(&self, room_id: &str, in_reply_to: &str, body: &str) -> Result<()> {
         self.timeline_manager
             .send_reply(&self.runtime, room_id, in_reply_to, body)
     }

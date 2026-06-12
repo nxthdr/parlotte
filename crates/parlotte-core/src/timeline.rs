@@ -196,13 +196,15 @@ impl TimelineManager {
             message: format!("invalid room ID: {e}"),
         })?;
         let timeline = self.require_timeline(&room_id)?;
-        let content = AnyMessageLikeEventContent::RoomMessage(RoomMessageEventContent::text_plain(
-            body,
-        ));
+        let content =
+            AnyMessageLikeEventContent::RoomMessage(RoomMessageEventContent::text_plain(body));
         runtime.block_on(async {
-            timeline.send(content).await.map_err(|e| ParlotteError::Room {
-                message: format!("failed to send message: {e}"),
-            })
+            timeline
+                .send(content)
+                .await
+                .map_err(|e| ParlotteError::Room {
+                    message: format!("failed to send message: {e}"),
+                })
         })?;
         Ok(())
     }
@@ -264,9 +266,10 @@ impl TimelineManager {
     }
 
     fn require_timeline(&self, room_id: &RoomId) -> Result<Arc<Timeline>> {
-        self.timeline_for(room_id).ok_or_else(|| ParlotteError::Room {
-            message: "no active timeline for this room".to_owned(),
-        })
+        self.timeline_for(room_id)
+            .ok_or_else(|| ParlotteError::Room {
+                message: "no active timeline for this room".to_owned(),
+            })
     }
 
     /// Whether a timeline is currently active for `room_id`.
@@ -331,10 +334,7 @@ fn timeline_item_to_message(item: &TimelineItem) -> Option<MessageInfo> {
 
     match ev.content() {
         TimelineItemContent::MsgLike(msglike) => {
-            let replied_to_event_id = msglike
-                .in_reply_to
-                .as_ref()
-                .map(|d| d.event_id.to_string());
+            let replied_to_event_id = msglike.in_reply_to.as_ref().map(|d| d.event_id.to_string());
             let reactions = collect_reactions(msglike);
 
             match &msglike.kind {

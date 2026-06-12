@@ -1003,7 +1003,10 @@ mod tests {
         // A second create for the same user must return the existing DM, not a
         // new room.
         let second = alice.create_dm(&bob_id).unwrap();
-        assert_eq!(first, second, "second create_dm should reuse the existing DM");
+        assert_eq!(
+            first, second,
+            "second create_dm should reuse the existing DM"
+        );
     }
 
     // -- Test: User directory search finds a registered user --
@@ -1536,9 +1539,7 @@ mod tests {
 
         // Send through the timeline: a local echo should appear, then resolve
         // to a confirmed message with a real event id.
-        alice
-            .timeline_send_message(&room_id, "echo test")
-            .unwrap();
+        alice.timeline_send_message(&room_id, "echo test").unwrap();
         let snap = wait_for(&collector, Duration::from_secs(15), |m| {
             m.iter()
                 .any(|x| x.body == "echo test" && !x.event_id.is_empty())
@@ -1565,9 +1566,7 @@ mod tests {
         alice.sync_once().unwrap();
 
         for i in 0..6 {
-            alice
-                .send_message(&room_id, &format!("msg {i}"))
-                .unwrap();
+            alice.send_message(&room_id, &format!("msg {i}")).unwrap();
         }
         alice.sync_once().unwrap();
 
