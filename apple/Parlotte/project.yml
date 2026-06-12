@@ -26,10 +26,17 @@ settings:
     MARKETING_VERSION: "0.1.0"
     # Build number — must increase for every TestFlight/App Store upload of the
     # same marketing version. 11 = matrix-sdk Timeline migration + typing-row
-    # spacing fix.
-    CURRENT_PROJECT_VERSION: "11"
+    # spacing fix. 12 = Apple-Silicon-only + stripped build (install size cut
+    # from ~216 MB to ~90 MB).
+    CURRENT_PROJECT_VERSION: "12"
     CODE_SIGN_STYLE: Automatic
     ENABLE_HARDENED_RUNTIME: YES
+    # Apple Silicon only. The statically-linked Rust core is large, so shipping
+    # the x86_64 slice would nearly double the download for no supported user
+    # (deployment target is macOS 15). build-apple.sh builds arm64 only to
+    # match. To restore Intel support, set this to "$(ARCHS_STANDARD)" and add
+    # the x86_64 target back in build-apple.sh.
+    ARCHS: arm64
 
 targets:
   ParlotteLib:

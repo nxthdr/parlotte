@@ -2,11 +2,13 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# Build a universal (arm64 + x86_64) static lib. xcodebuild's Release archive
-# builds the app for both architectures, so a single-arch Rust lib makes the
-# archive link fail ("symbol(s) not found for architecture x86_64") even though
-# `swift run` (native arch only) links fine.
-TARGET_TRIPLES=("aarch64-apple-darwin" "x86_64-apple-darwin")
+# Parlotte ships Apple Silicon only (arm64). The Rust core statically links the
+# entire matrix-sdk tree (~150 MB of code), so shipping a universal binary
+# would nearly double the download for an x86_64 slice no supported user needs.
+# The Xcode project pins ARCHS=arm64 to match, so a single-arch lib links
+# cleanly. (To restore Intel support, add "x86_64-apple-darwin" here AND set
+# ARCHS back to "$(ARCHS_STANDARD)" in apple/Parlotte/project.yml.)
+TARGET_TRIPLES=("aarch64-apple-darwin")
 FFI_LIB_NAME="parlotte_ffi"
 BUILD_MODE="${1:-release}"
 
@@ -48,13 +50,14 @@ for triple in "${TARGET_TRIPLES[@]}"; do
     PER_ARCH_LIBS+=("$lib")
 done
 
-# Step 2: Combine the per-arch libs into one universal (fat) archive.
+# Step 2: Assemble the lib the Swift package links against. `lipo -create`
+# handles one or many arches, so this still works if Intel is re-added later.
 LIB_OUT="$REPO_ROOT/apple/ParlotteSDK/RustFramework"
 mkdir -p "$LIB_OUT"
 UNIVERSAL_LIB="$LIB_OUT/lib${FFI_LIB_NAME}.a"
-log "Creating universal static library (${TARGET_TRIPLES[*]})..."
+log "Assembling static library (${TARGET_TRIPLES[*]})..."
 lipo -create "${PER_ARCH_LIBS[@]}" -output "$UNIVERSAL_LIB"
-log "Universal static library: $UNIVERSAL_LIB ($(lipo -archs "$UNIVERSAL_LIB"))"
+log "Static library: $UNIVERSAL_LIB ($(lipo -archs "$UNIVERSAL_LIB"))"
 
 # Step 3: Generate Swift bindings. Bindings are architecture-independent, so
 # any one per-arch lib works as the metadata source.

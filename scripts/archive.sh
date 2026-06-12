@@ -54,7 +54,17 @@ xcodebuild archive \
     -configuration Release \
     -archivePath "$ARCHIVE_PATH" \
     -destination 'generic/platform=macOS' \
-    -allowProvisioningUpdates
+    -allowProvisioningUpdates \
+    ARCHS=arm64 \
+    ONLY_ACTIVE_ARCH=NO
+# ARCHS=arm64 on the command line forces arm64 for the whole build INCLUDING the
+# SwiftPM package products — the per-project `ARCHS` setting alone doesn't reach
+# them, so the package framework would otherwise still try to link x86_64 and
+# fail against the arm64-only Rust lib.
+#
+# Symbol stripping is handled by `strip = true` in the workspace's
+# [profile.release] (Cargo.toml), which strips the Rust staticlib at build time
+# — a post-link `strip -x` on the framework is a no-op on top of that.
 
 # Export options for Mac App Store upload. Pre-generated via:
 #   xcodebuild -exportArchive -exportOptionsPlist <stub>

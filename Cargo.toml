@@ -20,3 +20,14 @@ tokio = { version = "1", features = ["full"] }
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Release profile tuned for binary size. The Rust core statically links the
+# whole matrix-sdk tree, so an untuned release binary is large. `strip` drops
+# symbol tables and `codegen-units = 1` lets the optimizer produce tighter
+# code. We deliberately avoid `lto = true`: for a `staticlib` consumed by
+# Xcode's linker it emits LLVM bitcode (bloating the `.a` and forcing a
+# fragile, version-sensitive LTO step onto ld). We keep unwinding (no
+# `panic = "abort"`) because UniFFI converts panics into errors across FFI.
+[profile.release]
+strip = true
+codegen-units = 1

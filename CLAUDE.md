@@ -44,7 +44,7 @@ The FFI crate re-wraps core types with UniFFI annotations rather than annotating
 
 ### Apple (`apple/`)
 
-macOS app (macOS 14+), with iOS (17+) planned. SwiftUI only — no UIKit, no AppKit, no legacy frameworks. The Swift code consumes `ParlotteSDK` (a Swift package wrapping the UniFFI-generated bindings).
+macOS app (macOS 15+, Apple Silicon only), with iOS (17+) planned. SwiftUI only — no UIKit, no AppKit, no legacy frameworks. The Swift code consumes `ParlotteSDK` (a Swift package wrapping the UniFFI-generated bindings).
 
 Structure:
 - `apple/ParlotteSDK/` — Swift package with 3 targets: `RustFramework` (static lib), `ParlotteFFI` (UniFFI-generated Swift), `ParlotteSDK` (hand-written async actor wrapper)
@@ -129,7 +129,7 @@ corresponding roadmap update create drift between intent and reality.
 
 ### Swift
 
-- SwiftUI only, minimum macOS 14 / iOS 17
+- SwiftUI only, minimum macOS 15 / iOS 17; macOS ships Apple Silicon (`arm64`) only
 - `@Observable` macro (not `ObservableObject`/`@Published`)
 - Swift concurrency (`async/await`, actors) — no Combine, no callbacks in Swift layer
 - `MatrixClient` actor wraps blocking FFI calls with `Task.detached`
@@ -152,6 +152,7 @@ corresponding roadmap update create drift between intent and reality.
 | Storage | SQLite via `matrix-sdk-sqlite` | Persistent, performant, works on all platforms |
 | Async runtime | tokio, owned by `ParlotteClient` | `matrix-sdk` requires tokio; embedding the runtime simplifies FFI |
 | Test server | Synapse in Docker | Official reference server; `docker compose` for reproducible setup |
+| CPU architecture | Apple Silicon only (`arm64`) | The statically-linked Rust core is large, so a universal binary nearly doubles the download for an x86_64 slice no supported user needs (deployment target is macOS 15). `build-apple.sh` builds arm64 only, `archive.sh` passes `ARCHS=arm64` to `xcodebuild` (so SwiftPM package products are arm64 too), and `[profile.release]` (`strip = true`, `codegen-units = 1`) strips the lib at build time. Combined effect: install ~216 MB → ~52 MB, download ~87 MB → ~27 MB. To restore Intel: re-add the x86_64 target in `build-apple.sh` and drop the `ARCHS=arm64` override in `archive.sh`. |
 | License | MIT | Permissive license, easy for anyone to use and contribute |
 
 ## Integration Test Infrastructure
