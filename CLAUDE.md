@@ -30,6 +30,11 @@ Modules:
 - `room.rs` — `RoomInfo` data type
 - `message.rs` — `MessageInfo`, `SessionInfo` data types
 - `sync.rs` — `SyncManager` for background sync lifecycle
+- `timeline.rs` — `TimelineManager`: wraps the `matrix-sdk-ui` `Timeline` for the
+  active room. Subscribes to the diff stream and emits full `MessageInfo`
+  snapshots via a `TimelineListener` callback; handles back-pagination and
+  local-echo sends (message/reply/reaction). The event cache is enabled in
+  `ParlotteClient::new` because the Timeline is backed by it.
 
 ### FFI (`parlotte-ffi`)
 
@@ -141,6 +146,7 @@ corresponding roadmap update create drift between intent and reality.
 | Decision | Choice | Rationale |
 |---|---|---|
 | Matrix SDK | `matrix-sdk` 0.18 | Official Rust SDK, actively maintained, used by Element X |
+| Message handling | `matrix-sdk-ui` `Timeline` | Snapshot-driven UI: SDK merges local echoes, edits, redactions, reactions, UTD-retry and pagination — far less custom reconciliation than the raw `/messages` API |
 | Sync strategy | Standard `/sync` | Simpler starting point; migrate to Sliding Sync later for perf |
 | FFI | UniFFI proc-macros | No UDL duplication, native async support, maintained by Mozilla |
 | Storage | SQLite via `matrix-sdk-sqlite` | Persistent, performant, works on all platforms |

@@ -12,7 +12,17 @@ pub struct ReactionInfo {
 /// A single message from a room timeline.
 #[derive(Debug, Clone)]
 pub struct MessageInfo {
-    /// The Matrix event ID.
+    /// Stable identity for this timeline item, used as the UI list key and
+    /// scroll anchor. Provided by the matrix-sdk Timeline and preserved across
+    /// a local echo's transition to a remote event, so the UI doesn't see the
+    /// row re-identify when a sent message is confirmed.
+    pub item_id: String,
+    /// Send state for local echoes: empty for remote events, otherwise
+    /// "sending", "sent", or "failed". The UI uses this to style un-confirmed
+    /// messages and to disable actions (reply/edit/react) until the event has
+    /// a real ID.
+    pub send_state: String,
+    /// The Matrix event ID. Empty while a local echo is still being sent.
     pub event_id: String,
     /// The sender's Matrix user ID.
     pub sender: String,
@@ -155,6 +165,8 @@ mod tests {
     #[test]
     fn message_info_construction() {
         let msg = MessageInfo {
+            item_id: "$event1:example.com".into(),
+            send_state: String::new(),
             event_id: "$event1:example.com".into(),
             sender: "@alice:example.com".into(),
             body: "Hello!".into(),
@@ -185,6 +197,8 @@ mod tests {
     #[test]
     fn message_info_clone() {
         let msg = MessageInfo {
+            item_id: "$e:x.com".into(),
+            send_state: String::new(),
             event_id: "$e:x.com".into(),
             sender: "@a:x.com".into(),
             body: "hi".into(),

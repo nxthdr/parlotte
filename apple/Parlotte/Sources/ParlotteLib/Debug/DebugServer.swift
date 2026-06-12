@@ -260,11 +260,9 @@ public final class DebugServer: @unchecked Sendable {
     }
 
     private func cmdRefresh() async -> (Int, Data) {
+        // Messages are driven by the open room's timeline subscription, which
+        // pushes snapshots on its own; only the room list needs a manual pull.
         await appState.refreshRooms()
-        let hasRoom = await MainActor.run { appState.selectedRoomId != nil }
-        if hasRoom {
-            await appState.refreshMessages()
-        }
         return okResponse([:])
     }
 

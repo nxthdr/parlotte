@@ -36,6 +36,10 @@
 - [ ] Space permissions / power levels
 
 ## Messaging
+- [x] Timeline-backed message handling (matrix-sdk-ui `Timeline`: snapshot-driven
+      UI, automatic local echoes, edit/redaction/reaction aggregation, UTD
+      decryption-retry healing, back-pagination — replaces the hand-rolled
+      `/messages` reconciliation, optimistic-placeholder and redaction-heuristic code)
 - [x] Send and receive text messages
 - [x] Message history with pagination on scroll
 - [x] Message editing

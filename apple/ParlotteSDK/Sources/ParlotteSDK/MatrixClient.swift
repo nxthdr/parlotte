@@ -379,6 +379,49 @@ public actor MatrixClient {
         ffi.isSyncing()
     }
 
+    // -- Timeline (active room) --
+
+    public nonisolated func startTimeline(roomId: String, listener: ParlotteTimelineListener) throws {
+        try ffi.startTimeline(roomId: roomId, listener: listener)
+    }
+
+    public nonisolated func stopTimeline() {
+        ffi.stopTimeline()
+    }
+
+    public nonisolated func isTimelineActive(roomId: String) -> Bool {
+        ffi.isTimelineActive(roomId: roomId)
+    }
+
+    @discardableResult
+    public func paginateTimelineBack(roomId: String, numEvents: UInt16) async throws -> Bool {
+        let ffi = self.ffi
+        return try await runBlocking {
+            try ffi.paginateTimelineBack(roomId: roomId, numEvents: numEvents)
+        }.value
+    }
+
+    public func timelineSendMessage(roomId: String, body: String) async throws {
+        let ffi = self.ffi
+        try await runBlocking {
+            try ffi.timelineSendMessage(roomId: roomId, body: body)
+        }.value
+    }
+
+    public func timelineSendReply(roomId: String, inReplyTo: String, body: String) async throws {
+        let ffi = self.ffi
+        try await runBlocking {
+            try ffi.timelineSendReply(roomId: roomId, inReplyTo: inReplyTo, body: body)
+        }.value
+    }
+
+    public func timelineToggleReaction(roomId: String, targetEventId: String, key: String) async throws {
+        let ffi = self.ffi
+        try await runBlocking {
+            try ffi.timelineToggleReaction(roomId: roomId, targetEventId: targetEventId, key: key)
+        }.value
+    }
+
     public func recoveryState() async -> RecoveryState {
         let ffi = self.ffi
         return await Task.detached {

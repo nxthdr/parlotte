@@ -102,20 +102,25 @@ public final class AppState {
                     try? await client.sendTypingNotice(roomId: oldRoom, isTyping: false)
                 }
             }
+            // Tear down the previous room's timeline subscription; clear the
+            // view state so a stale snapshot can never paint the new room.
+            client?.stopTimeline()
             messages = []
-            messageEndToken = nil
-            hasMoreMessages = false
+            lastReceiptEventId = nil
+            // A freshly-opened room may have older history to page in; the
+            // first back-pagination updates this from the timeline.
+            hasMoreMessages = true
             memberProfiles = [:]
-            pendingSends = [:]
             if let roomId = selectedRoomId {
                 // Optimistically clear unread count immediately
                 if let idx = rooms.firstIndex(where: { $0.id == roomId }) {
                     rooms[idx].unreadCount = 0
                 }
+                // Subscribe to the room's matrix-sdk Timeline. Snapshots arrive
+                // via `handleTimelineUpdate`; the first one populates `messages`.
+                startTimeline(roomId: roomId)
                 roomRefreshTask = Task {
-                    await refreshMessages()
                     await refreshMemberProfiles()
-                    await sendReadReceiptForLatestMessage()
                 }
             }
         }
@@ -130,23 +135,24 @@ public final class AppState {
     /// instead of repopulating logged-out state.
     private var sessionEpoch = 0
 
-    /// True if work that captured `(roomId, epoch)` before an await should
-    /// discard its result: the user switched rooms or the session was reset
-    /// during the suspension. Centralises the guard that `refreshMessages`,
-    /// `appendNewMessages` and `loadMoreMessages` need after every await.
-    private func isStale(roomId: String, epoch: Int) -> Bool {
-        epoch != sessionEpoch || roomId != selectedRoomId
+    /// True if work that captured `epoch` before an await should discard its
+    /// result because the session was reset during the suspension (logout /
+    /// token invalidation). Used by the room-list refresh.
+    private func isStaleEpoch(_ epoch: Int) -> Bool {
+        epoch != sessionEpoch
     }
+    /// The room's messages, oldest-first. Owned entirely by the matrix-sdk
+    /// Timeline: every value here is a snapshot delivered to
+    /// `handleTimelineUpdate`. We never mutate it directly — sends, edits,
+    /// redactions and reactions all round-trip through the timeline and come
+    /// back as a fresh snapshot.
     public var messages: [MessageInfo] = []
     public var hasMoreMessages = false
     public var isLoadingMoreMessages = false
-    private var messageEndToken: String?
 
-    /// Maps a sent message's real (server-assigned) event ID to the optimistic
-    /// placeholder awaiting it. Lets a sync tick remove *only* the placeholder
-    /// whose echo actually arrived, instead of sweeping every in-flight send
-    /// the moment any new message shows up.
-    private var pendingSends: [String: String] = [:]
+    /// Event ID of the message we last sent a read receipt for, so a stream of
+    /// timeline snapshots doesn't fire a receipt on every redraw.
+    private var lastReceiptEventId: String?
 
     /// Member profiles for the selected room: userId -> (displayName, avatarUrl).
     /// Populated automatically when a room is selected.
@@ -496,6 +502,7 @@ public final class AppState {
     /// results. Does not touch persisted storage or call the network.
     private func resetInMemorySessionState() {
         sessionEpoch &+= 1
+        client?.stopTimeline()
         client?.stopSync()
         isSyncActive = false
         client = nil
@@ -520,8 +527,6 @@ public final class AppState {
         verificationStateValue = nil
         verificationErrorMessage = nil
         isProcessingVerification = false
-        pendingAttachments.removeAll()
-        pendingSends = [:]
         mediaCache.removeAllObjects()
         previousUnreadCounts = [:]
     }
@@ -540,10 +545,6 @@ public final class AppState {
         clearSavedOidcSession()
         clearStore()
     }
-
-    /// Bytes for optimistic attachment messages, keyed on the placeholder event ID.
-    /// Removed when the server-side event replaces the placeholder on sync.
-    public var pendingAttachments: [String: Data] = [:]
 
     /// In-memory cache of downloaded media bytes keyed on mxc:// URI.
     /// Auto-evicts under memory pressure.
@@ -651,167 +652,46 @@ public final class AppState {
         selectedRoomId = roomId
     }
 
-    public func refreshMessages() async {
-        guard let client, let roomId = selectedRoomId else {
-            messages = []
-            return
-        }
-        let epoch = sessionEpoch
+    /// Subscribe to the matrix-sdk Timeline for `roomId`. The listener captures
+    /// the room it was started for, so a snapshot that arrives after the user
+    /// has navigated away is discarded in `handleTimelineUpdate`.
+    private func startTimeline(roomId: String) {
+        guard let client else { return }
+        let handler = TimelineUpdateHandler(appState: self, roomId: roomId)
         do {
-            let batch = try await client.messages(roomId: roomId, limit: 50, from: nil)
-            // The user may have switched rooms (or logged out) during the
-            // fetch; applying A's batch to B's view would corrupt the timeline.
-            guard !isStale(roomId: roomId, epoch: epoch) else { return }
-            messages = batch.messages
-            messageEndToken = batch.endToken
-            hasMoreMessages = batch.endToken != nil
+            try client.startTimeline(roomId: roomId, listener: handler)
         } catch {
-            // Non-fatal — messages may not be available yet
+            // Non-fatal: the room will simply show no messages until retried.
         }
     }
 
-    /// Called on sync — checks for new messages, edits, and redactions.
-    /// Minimises array mutations to avoid unnecessary SwiftUI re-renders.
-    public func appendNewMessages() async {
-        guard let client, let roomId = selectedRoomId, !messages.isEmpty else { return }
-        let epoch = sessionEpoch
-        do {
-            let batch = try await client.messages(roomId: roomId, limit: 50, from: nil)
-            // Bail if the room changed under us: steps 2–3 below mutate the
-            // `messages` array relative to this batch, which would delete the
-            // new room's messages and graft this room's in.
-            guard !isStale(roomId: roomId, epoch: epoch) else { return }
-            let serverMessages = batch.messages
-            let serverById = Dictionary(
-                serverMessages.map { ($0.eventId, $0) },
-                uniquingKeysWith: { _, last in last }
-            )
-
-            var changed = false
-
-            // 1. Update edited messages in place. Compare formattedBody too:
-            // an optimistic edit clears it (and sets isEdited), so the server
-            // echo of a formatted edit has matching body/isEdited/reactions but
-            // a differing formattedBody — without this check the rich version
-            // would never replace the plain optimistic one.
-            for i in messages.indices {
-                if let serverMsg = serverById[messages[i].eventId] {
-                    if messages[i].body != serverMsg.body
-                        || messages[i].formattedBody != serverMsg.formattedBody
-                        || messages[i].isEdited != serverMsg.isEdited
-                        || messages[i].reactions != serverMsg.reactions
-                    {
-                        messages[i] = serverMsg
-                        changed = true
-                    }
-                }
-            }
-
-            // 2. Remove redacted messages — only those recent enough that the
-            //    server batch should contain them (preserves older paginated messages
-            //    and in-flight optimistic placeholders)
-            let serverIds = Set(serverMessages.map(\.eventId))
-            if let oldestServerTs = serverMessages.first?.timestampMs {
-                let before = messages.count
-                messages.removeAll { msg in
-                    !msg.eventId.hasPrefix("~optimistic:")
-                        && msg.timestampMs >= oldestServerTs
-                        && !serverIds.contains(msg.eventId)
-                }
-                if messages.count != before { changed = true }
-            }
-
-            // 3. Add genuinely new messages
-            let existingIds = Set(messages.map(\.eventId))
-            let newMessages = serverMessages.filter { !existingIds.contains($0.eventId) }
-            if !newMessages.isEmpty {
-                // Resolve only the placeholders whose real echo is in this
-                // batch — never sweep placeholders for sends still in flight
-                // (a different sender's message arriving must not erase my
-                // not-yet-confirmed send).
-                let arrivedIds = Set(newMessages.map(\.eventId))
-                let resolved = Set(pendingSends.filter { arrivedIds.contains($0.key) }.values)
-                if !resolved.isEmpty {
-                    for placeholderId in resolved {
-                        pendingAttachments.removeValue(forKey: placeholderId)
-                    }
-                    messages.removeAll { resolved.contains($0.eventId) }
-                    pendingSends = pendingSends.filter { !arrivedIds.contains($0.key) }
-                }
-                messages.append(contentsOf: newMessages)
-                changed = true
-            }
-
-            if changed {
-                await sendReadReceiptForLatestMessage()
-            }
-        } catch {
-            // Non-fatal
+    /// Apply a full message snapshot delivered by the timeline. This is the
+    /// single entry point for message state: the timeline has already merged
+    /// local echoes, edits, redactions, reactions and decryption retries, so we
+    /// just replace the array. `roomId` guards against a late snapshot from a
+    /// room we've since left.
+    public func handleTimelineUpdate(roomId: String, messages newMessages: [MessageInfo]) {
+        guard roomId == selectedRoomId else { return }
+        messages = newMessages
+        // Acknowledge the newest message we can, when the room is focused.
+        if isAppActiveProvider() {
+            Task { await sendReadReceiptForLatestMessage() }
         }
     }
 
-    /// Reconcile a just-confirmed send with its optimistic placeholder. If the
-    /// server echo already arrived via a sync tick (it raced ahead of the send
-    /// call returning), drop the placeholder now; otherwise record the real
-    /// event ID so the next sync tick resolves it.
-    private func resolvePlaceholder(placeholderId: String, realEventId: String) {
-        if messages.contains(where: { $0.eventId == realEventId }) {
-            messages.removeAll { $0.eventId == placeholderId }
-            pendingAttachments.removeValue(forKey: placeholderId)
-        } else {
-            pendingSends[realEventId] = placeholderId
-        }
-    }
-
-    private func makeOptimisticMessage(body: String) -> MessageInfo {
-        MessageInfo(
-            eventId: "~optimistic:\(UUID().uuidString)",
-            sender: loggedInUserId ?? "",
-            body: body,
-            formattedBody: nil,
-            messageType: "text",
-            timestampMs: UInt64(Date().timeIntervalSince1970 * 1000),
-            isEdited: false,
-            repliedToEventId: nil,
-            mediaSource: nil,
-            mediaMimeType: nil,
-            mediaWidth: nil,
-            mediaHeight: nil,
-            mediaSize: nil,
-            reactions: []
-        )
-    }
-
+    /// Load older history in the open room by paginating the timeline
+    /// backwards. New items arrive through the snapshot; we only track whether
+    /// the start of the room has been reached.
     public func loadMoreMessages() async {
         guard let client, let roomId = selectedRoomId,
-              let token = messageEndToken, !isLoadingMoreMessages else { return }
+              hasMoreMessages, !isLoadingMoreMessages else { return }
 
         isLoadingMoreMessages = true
-        let epoch = sessionEpoch
         do {
-            let batch = try await client.messages(roomId: roomId, limit: 50, from: token)
-            // Discard a page that arrives after a room switch: prepending A's
-            // history into B and storing A's pagination token would break both.
-            guard !isStale(roomId: roomId, epoch: epoch) else {
-                isLoadingMoreMessages = false
-                return
-            }
-            let existingIds = Set(messages.map(\.eventId))
-            let deduped = batch.messages.filter { !existingIds.contains($0.eventId) }
-            if let endToken = batch.endToken {
-                // Advance the cursor even if this page fully overlapped what we
-                // already have; only a nil endToken means end-of-history.
-                if !deduped.isEmpty {
-                    messages.insert(contentsOf: deduped, at: 0)
-                }
-                messageEndToken = endToken
-                hasMoreMessages = true
-            } else {
-                if !deduped.isEmpty {
-                    messages.insert(contentsOf: deduped, at: 0)
-                }
-                hasMoreMessages = false
-                messageEndToken = nil
+            let reachedStart = try await client.paginateTimelineBack(roomId: roomId, numEvents: 50)
+            // Only apply if we're still in the same room.
+            if roomId == selectedRoomId {
+                hasMoreMessages = !reachedStart
             }
         } catch {
             // Non-fatal
@@ -845,27 +725,10 @@ public final class AppState {
             if size.height > 0 { height = UInt32(size.height) }
         }
 
-        let placeholder = MessageInfo(
-            eventId: "~optimistic:\(UUID().uuidString)",
-            sender: loggedInUserId ?? "",
-            body: filename,
-            formattedBody: nil,
-            messageType: isImage ? "image" : "file",
-            timestampMs: UInt64(Date().timeIntervalSince1970 * 1000),
-            isEdited: false,
-            repliedToEventId: nil,
-            mediaSource: nil,
-            mediaMimeType: mimeType,
-            mediaWidth: width,
-            mediaHeight: height,
-            mediaSize: UInt64(data.count),
-            reactions: []
-        )
-        messages.append(placeholder)
-        pendingAttachments[placeholder.eventId] = data
-
+        // The sent attachment surfaces in the timeline snapshot once it has
+        // uploaded and round-tripped through the send queue.
         do {
-            let realId = try await client.sendAttachment(
+            _ = try await client.sendAttachment(
                 roomId: roomId,
                 filename: filename,
                 mimeType: mimeType,
@@ -873,10 +736,7 @@ public final class AppState {
                 width: width,
                 height: height
             )
-            resolvePlaceholder(placeholderId: placeholder.eventId, realEventId: realId)
         } catch {
-            messages.removeAll { $0.eventId == placeholder.eventId }
-            pendingAttachments.removeValue(forKey: placeholder.eventId)
             errorMessage = error.displayMessage
         }
     }
@@ -911,14 +771,11 @@ public final class AppState {
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        let placeholder = makeOptimisticMessage(body: trimmed)
-        messages.append(placeholder)
-
+        // The timeline produces a local echo immediately and a fresh snapshot
+        // follows, so we don't manage an optimistic placeholder ourselves.
         do {
-            let realId = try await client.sendMessage(roomId: roomId, body: trimmed)
-            resolvePlaceholder(placeholderId: placeholder.eventId, realEventId: realId)
+            try await client.timelineSendMessage(roomId: roomId, body: trimmed)
         } catch {
-            messages.removeAll { $0.eventId == placeholder.eventId }
             errorMessage = error.displayMessage
         }
     }
@@ -1004,111 +861,60 @@ public final class AppState {
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        var placeholder = makeOptimisticMessage(body: trimmed)
-        placeholder.repliedToEventId = eventId
-        messages.append(placeholder)
-
         do {
-            let realId = try await client.sendReply(roomId: roomId, eventId: eventId, body: trimmed)
-            resolvePlaceholder(placeholderId: placeholder.eventId, realEventId: realId)
+            try await client.timelineSendReply(roomId: roomId, inReplyTo: eventId, body: trimmed)
         } catch {
-            messages.removeAll { $0.eventId == placeholder.eventId }
             errorMessage = error.displayMessage
         }
     }
 
+    /// Add or remove the current user's reaction. The timeline handles the
+    /// add/remove decision and emits a local echo, so we don't track reaction
+    /// state ourselves — the next snapshot reflects the change.
     public func toggleReaction(eventId: String, key: String) async {
         guard let client, let roomId = selectedRoomId else { return }
-        guard let msgIdx = messages.firstIndex(where: { $0.eventId == eventId }) else { return }
-
-        // Check if user already reacted with this key
-        let existingReaction = messages[msgIdx].reactions.first(where: {
-            $0.key == key && $0.sender == loggedInUserId
-        })
-
-        if let existing = existingReaction {
-            // Optimistic remove
-            messages[msgIdx].reactions.removeAll { $0.eventId == existing.eventId }
-            do {
-                try await client.redactReaction(roomId: roomId, reactionEventId: existing.eventId)
-            } catch {
-                // Revert: re-add the reaction
-                if let idx = messages.firstIndex(where: { $0.eventId == eventId }) {
-                    messages[idx].reactions.append(existing)
-                }
-                errorMessage = error.displayMessage
-            }
-        } else {
-            // Optimistic add
-            let optimisticReaction = ReactionInfo(
-                eventId: "~optimistic:\(UUID().uuidString)",
-                key: key,
-                sender: loggedInUserId ?? ""
-            )
-            messages[msgIdx].reactions.append(optimisticReaction)
-            do {
-                let realEventId = try await client.sendReaction(roomId: roomId, eventId: eventId, key: key)
-                // Replace optimistic with real event ID
-                if let idx = messages.firstIndex(where: { $0.eventId == eventId }),
-                   let rIdx = messages[idx].reactions.firstIndex(where: { $0.eventId == optimisticReaction.eventId }) {
-                    messages[idx].reactions[rIdx] = ReactionInfo(
-                        eventId: realEventId,
-                        key: key,
-                        sender: loggedInUserId ?? ""
-                    )
-                }
-            } catch {
-                // Revert
-                if let idx = messages.firstIndex(where: { $0.eventId == eventId }) {
-                    messages[idx].reactions.removeAll { $0.eventId == optimisticReaction.eventId }
-                }
-                errorMessage = error.displayMessage
-            }
+        // A local echo has no event ID yet; reactions need a remote target.
+        guard !eventId.isEmpty else { return }
+        do {
+            try await client.timelineToggleReaction(roomId: roomId, targetEventId: eventId, key: key)
+        } catch {
+            errorMessage = error.displayMessage
         }
     }
 
     public func editMessage(eventId: String, newBody: String) async {
         guard let client, let roomId = selectedRoomId else { return }
-        guard let idx = messages.firstIndex(where: { $0.eventId == eventId }) else { return }
-
-        let oldBody = messages[idx].body
-        let oldFormatted = messages[idx].formattedBody
-        let wasEdited = messages[idx].isEdited
-
-        messages[idx].body = newBody
-        messages[idx].formattedBody = nil
-        messages[idx].isEdited = true
-
+        guard !eventId.isEmpty else { return }
+        // The edit round-trips and the timeline aggregates it into the original
+        // item, surfacing as an updated snapshot.
         do {
             try await client.editMessage(roomId: roomId, eventId: eventId, newBody: newBody)
         } catch {
-            if let idx = messages.firstIndex(where: { $0.eventId == eventId }) {
-                messages[idx].body = oldBody
-                messages[idx].formattedBody = oldFormatted
-                messages[idx].isEdited = wasEdited
-            }
             errorMessage = error.displayMessage
         }
     }
 
     public func deleteMessage(eventId: String) async {
         guard let client, let roomId = selectedRoomId else { return }
-        guard let idx = messages.firstIndex(where: { $0.eventId == eventId }) else { return }
-
-        let removed = messages.remove(at: idx)
-
+        guard !eventId.isEmpty else { return }
+        // The redaction round-trips and the timeline removes/redacts the item.
         do {
             try await client.redactMessage(roomId: roomId, eventId: eventId)
         } catch {
-            messages.insert(removed, at: min(idx, messages.count))
             errorMessage = error.displayMessage
         }
     }
 
     public func sendReadReceipt(roomId: String) async {
-        guard let client, let lastMessage = messages.last else { return }
+        guard let client else { return }
+        // Skip local echoes (no event ID yet) and de-dupe: timeline snapshots
+        // arrive frequently, but we only need to acknowledge each new newest
+        // message once.
+        guard let lastEventId = messages.last(where: { !$0.eventId.isEmpty })?.eventId,
+              lastEventId != lastReceiptEventId else { return }
+        lastReceiptEventId = lastEventId
         do {
-            try await client.sendReadReceipt(roomId: roomId, eventId: lastMessage.eventId)
+            try await client.sendReadReceipt(roomId: roomId, eventId: lastEventId)
         } catch {
             // Non-fatal — read receipts are best-effort
         }
@@ -1439,13 +1245,13 @@ public final class AppState {
             isPromptingRecoveryEntry = false
             accepted = true
             // Recovery imports the backup decryption key; the room (megolm)
-            // keys then download from the server-side key backup. Sync and
-            // re-fetch so messages that were "Unable to decrypt" pick up the
-            // newly-available keys and re-render. (Keys can keep arriving in
-            // the background, so later sync ticks continue to heal the rest.)
+            // keys then download from the server-side key backup. Sync so the
+            // keys arrive — the open room's Timeline retries decryption on
+            // previously-undecryptable events and emits a healed snapshot on its
+            // own. (Keys can keep arriving in the background, so later ticks
+            // continue to heal the rest.)
             try? await client.syncOnce()
             await refreshRooms()
-            await refreshMessages()
         } catch {
             recoveryErrorMessage = error.displayMessage
         }
@@ -1539,9 +1345,10 @@ public final class AppState {
     }
 
     /// Called from the matrix-sdk sync listener whenever a sync tick brings new
-    /// state from the server. Refreshes rooms, the open room's messages, and
-    /// the member-profile cache so other users' display name/avatar changes are
-    /// picked up without needing to switch rooms.
+    /// state from the server. Refreshes rooms and the member-profile cache so
+    /// other users' display name/avatar changes are picked up without switching
+    /// rooms. Message state is *not* refreshed here — the open room's matrix-sdk
+    /// Timeline drives `messages` directly via `handleTimelineUpdate`.
     public func handleSyncUpdate() async {
         // A successful tick means we're connected; clear the retry budget so a
         // later isolated failure gets a fresh set of restart attempts.
@@ -1549,15 +1356,7 @@ public final class AppState {
         await refreshVerificationState()
         await refreshIgnoredUsers()
         await refreshRooms()
-        // Always check for new messages when a room is selected.
-        // Own messages don't increment unreadCount, so we can't gate on it —
-        // the dedup in appendNewMessages handles duplicates.
         if selectedRoomId != nil {
-            if messages.isEmpty {
-                await refreshMessages()
-            } else {
-                await appendNewMessages()
-            }
             // Pick up member profile changes (e.g., other users updating avatars)
             await refreshMemberProfiles()
         }
@@ -1955,6 +1754,25 @@ private final class SyncUpdateHandler: ParlotteSyncListener, @unchecked Sendable
     func onSyncStopped(error: String?) {
         Task { @MainActor [weak appState] in
             await appState?.handleSyncStopped(error: error)
+        }
+    }
+}
+
+/// Bridge from the matrix-sdk Timeline diff stream to the main actor. Carries
+/// the room it was created for so a snapshot that lands after the user switches
+/// rooms is discarded by `handleTimelineUpdate`.
+private final class TimelineUpdateHandler: ParlotteTimelineListener, @unchecked Sendable {
+    private weak var appState: AppState?
+    private let roomId: String
+
+    init(appState: AppState, roomId: String) {
+        self.appState = appState
+        self.roomId = roomId
+    }
+
+    func onTimelineUpdate(messages: [MessageInfo]) {
+        Task { @MainActor [weak appState, roomId] in
+            appState?.handleTimelineUpdate(roomId: roomId, messages: messages)
         }
     }
 }

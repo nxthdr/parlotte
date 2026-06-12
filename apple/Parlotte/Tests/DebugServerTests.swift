@@ -143,11 +143,10 @@ struct DebugServerTests {
 
     // MARK: - /cmd send_message
 
-    @Test("POST /cmd send_message appends optimistic placeholder and calls client")
+    @Test("POST /cmd send_message sends through the timeline")
     func sendMessageAppendsPlaceholder() async throws {
         appState.selectedRoomId = "!room1:example.com"
         await appState.roomRefreshTask?.value
-        mock.messagesCalls.removeAll()
 
         let (status, body) = try await client.post("/cmd", body: [
             "op": "send_message",
@@ -156,9 +155,10 @@ struct DebugServerTests {
 
         #expect(status == 200)
         #expect(body["ok"] as? Bool == true)
-        #expect(mock.sendMessageCalls.count == 1)
-        #expect(mock.sendMessageCalls.first?.body == "Hello from IPC")
-        #expect(appState.messages.contains(where: { $0.body == "Hello from IPC" }))
+        // Sends route through the timeline; the local echo would arrive via a
+        // snapshot, not a manual placeholder.
+        #expect(mock.timelineSendMessageCalls.count == 1)
+        #expect(mock.timelineSendMessageCalls.first?.body == "Hello from IPC")
     }
 
     @Test("POST /cmd send_message without body returns 400")
@@ -169,18 +169,18 @@ struct DebugServerTests {
 
     // MARK: - /cmd refresh
 
-    @Test("POST /cmd refresh triggers rooms and messages fetch")
+    @Test("POST /cmd refresh triggers a room-list fetch")
     func refreshCallsClient() async throws {
         appState.selectedRoomId = "!room1:example.com"
         await appState.roomRefreshTask?.value
-        mock.messagesCalls.removeAll()
         mock.roomsResult = [makeRoom(id: "!room1:example.com", name: "RefreshedName")]
 
         let (status, _) = try await client.post("/cmd", body: ["op": "refresh"])
 
         #expect(status == 200)
+        // Messages are driven by the timeline subscription, so refresh only
+        // pulls the room list.
         #expect(appState.rooms.first?.displayName == "RefreshedName")
-        #expect(mock.messagesCalls.count == 1)
     }
 
     // MARK: - /cmd load_older

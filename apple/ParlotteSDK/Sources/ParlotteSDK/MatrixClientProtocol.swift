@@ -56,6 +56,14 @@ public protocol MatrixClientProtocol: Sendable {
     func startSync(listener: ParlotteSyncListener) throws
     func stopSync()
     var isSyncing: Bool { get }
+    func startTimeline(roomId: String, listener: ParlotteTimelineListener) throws
+    func stopTimeline()
+    func isTimelineActive(roomId: String) -> Bool
+    @discardableResult
+    func paginateTimelineBack(roomId: String, numEvents: UInt16) async throws -> Bool
+    func timelineSendMessage(roomId: String, body: String) async throws
+    func timelineSendReply(roomId: String, inReplyTo: String, body: String) async throws
+    func timelineToggleReaction(roomId: String, targetEventId: String, key: String) async throws
     func recoveryState() async -> RecoveryState
     func enableRecovery(passphrase: String?) async throws -> String
     func disableRecovery() async throws

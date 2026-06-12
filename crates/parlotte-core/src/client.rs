@@ -25,6 +25,7 @@ use crate::recovery::RecoveryState;
 use crate::room::{PublicRoomInfo, RoomInfo, RoomMemberInfo, UserSearchResult};
 use crate::session::{SessionChangeEvent, SessionChangeListener};
 use crate::sync::{SyncListener, SyncManager};
+use crate::timeline::{TimelineListener, TimelineManager};
 use crate::verification::{
     self, ActiveVerification, SharedActive, VerificationListener, VerificationRequestInfo,
     VerificationState,
@@ -37,6 +38,10 @@ pub struct ParlotteClient {
     inner: Option<Client>,
     runtime: tokio::runtime::Runtime,
     sync_manager: SyncManager,
+    /// Manages the active room's matrix-sdk Timeline (the open room). Drives
+    /// message display, local echoes, edits/redactions/reactions aggregation,
+    /// and back-pagination via snapshots emitted to a `TimelineListener`.
+    timeline_manager: TimelineManager,
     active_verification: SharedActive,
     /// In-progress cross-signing identity reset. Populated by
     /// `begin_reset_identity` when the server requires OAuth/UIAA approval,
@@ -74,15 +79,30 @@ impl ParlotteClient {
                 builder = builder.sqlite_store(path, None);
             }
 
-            builder.build().await.map_err(|e| ParlotteError::Network {
+            let client = builder.build().await.map_err(|e| ParlotteError::Network {
                 message: e.to_string(),
-            })
+            })?;
+
+            // Enable the event cache up front. The matrix-sdk Timeline is backed
+            // by the event cache, which only accumulates events from syncs that
+            // happen *after* it is subscribed. Subscribing here — before login
+            // and sync — ensures every room's timeline can show live history
+            // when it is later opened. Idempotent and cheap.
+            client
+                .event_cache()
+                .subscribe()
+                .map_err(|e| ParlotteError::Unknown {
+                    message: format!("failed to enable event cache: {e}"),
+                })?;
+
+            Ok::<_, ParlotteError>(client)
         })?;
 
         Ok(Self {
             inner: Some(client),
             runtime,
             sync_manager: SyncManager::new(),
+            timeline_manager: TimelineManager::new(),
             active_verification: Arc::new(tokio::sync::Mutex::new(ActiveVerification::default())),
             active_reset: Arc::new(tokio::sync::Mutex::new(None)),
             verification_handle: std::sync::Mutex::new(None),
@@ -827,6 +847,8 @@ impl ParlotteClient {
                 ) = &deserialized
                 {
                     messages.push(MessageInfo {
+                        item_id: original.event_id.to_string(),
+                        send_state: String::new(),
                         event_id: original.event_id.to_string(),
                         sender: original.sender.to_string(),
                         body: "Unable to decrypt message".to_owned(),
@@ -884,6 +906,8 @@ impl ParlotteClient {
                         extract_media_info(&original.content.msgtype);
 
                     messages.push(MessageInfo {
+                        item_id: original.event_id.to_string(),
+                        send_state: String::new(),
                         event_id: original.event_id.to_string(),
                         sender: original.sender.to_string(),
                         body,
@@ -1134,6 +1158,63 @@ impl ParlotteClient {
     /// Check if sync is currently running.
     pub fn is_syncing(&self) -> bool {
         self.sync_manager.is_running()
+    }
+
+    // -- Timeline (active room) --
+
+    /// Start (or restart) the matrix-sdk Timeline subscription for `room_id`.
+    /// Emits an initial snapshot of the room's messages immediately, then a
+    /// fresh full snapshot to `listener` on every subsequent change (new
+    /// messages, edits, redactions, reactions, decryption retries, local
+    /// echoes). Replaces any previously-active timeline.
+    pub fn start_timeline(&self, room_id: &str, listener: Arc<dyn TimelineListener>) -> Result<()> {
+        self.timeline_manager
+            .start(self.client(), &self.runtime, room_id, listener)
+    }
+
+    /// Stop the active timeline subscription, if any. Idempotent.
+    pub fn stop_timeline(&self) {
+        self.timeline_manager.stop(&self.runtime);
+    }
+
+    /// Whether a timeline is currently active for `room_id`.
+    pub fn is_timeline_active(&self, room_id: &str) -> bool {
+        self.timeline_manager.is_active(room_id)
+    }
+
+    /// Load older history in the active room. New items arrive via the timeline
+    /// snapshot. Returns `true` if the start of the room has been reached.
+    pub fn paginate_timeline_back(&self, room_id: &str, num_events: u16) -> Result<bool> {
+        self.timeline_manager
+            .paginate_back(&self.runtime, room_id, num_events)
+    }
+
+    /// Send a plain-text message to the active room (local echo via timeline).
+    pub fn timeline_send_message(&self, room_id: &str, body: &str) -> Result<()> {
+        self.timeline_manager
+            .send_message(&self.runtime, room_id, body)
+    }
+
+    /// Send a reply to `in_reply_to` in the active room (local echo).
+    pub fn timeline_send_reply(
+        &self,
+        room_id: &str,
+        in_reply_to: &str,
+        body: &str,
+    ) -> Result<()> {
+        self.timeline_manager
+            .send_reply(&self.runtime, room_id, in_reply_to, body)
+    }
+
+    /// Toggle a reaction on a message in the active room (local echo).
+    pub fn timeline_toggle_reaction(
+        &self,
+        room_id: &str,
+        target_event_id: &str,
+        key: &str,
+    ) -> Result<()> {
+        self.timeline_manager
+            .toggle_reaction(&self.runtime, room_id, target_event_id, key)
     }
 
     /// Access the underlying matrix_sdk::Client (for advanced usage / tests).
@@ -2274,7 +2355,7 @@ fn apply_edits(messages: &mut [MessageInfo], mut edits: HashMap<String, Vec<Edit
     }
 }
 
-fn extract_body_and_formatted(
+pub(crate) fn extract_body_and_formatted(
     msgtype: &matrix_sdk::ruma::events::room::message::MessageType,
 ) -> (String, Option<String>) {
     use matrix_sdk::ruma::events::room::message::MessageType;
@@ -2331,7 +2412,7 @@ type MediaFields = (
     Option<u64>,
 );
 
-fn extract_media_info(
+pub(crate) fn extract_media_info(
     msgtype: &matrix_sdk::ruma::events::room::message::MessageType,
 ) -> MediaFields {
     use matrix_sdk::ruma::events::room::message::MessageType;
@@ -2402,7 +2483,7 @@ fn extract_media_info(
 }
 
 /// Return a short string label for the message type.
-fn message_type_str(
+pub(crate) fn message_type_str(
     msgtype: &matrix_sdk::ruma::events::room::message::MessageType,
 ) -> &'static str {
     use matrix_sdk::ruma::events::room::message::MessageType;
@@ -2449,11 +2530,15 @@ impl Drop for ParlotteClient {
         let inner = self.inner.take();
         let session_task = self.session_change_task.get_mut().unwrap().take();
         let sync_manager = &self.sync_manager;
+        let timeline_manager = &self.timeline_manager;
         let active_verification = self.active_verification.clone();
 
         self.runtime.block_on(async move {
             // Stop sync and await the aborted loop so its Client clone is freed.
             sync_manager.drain().await;
+            // Tear down the active room timeline likewise; the Timeline holds a
+            // Client clone (via its Room) that must be released in the runtime.
+            timeline_manager.drain().await;
             // Stop and reap the session-change subscription task likewise.
             if let Some(task) = session_task {
                 task.abort();
@@ -2693,6 +2778,8 @@ mod tests {
 
     fn make_message(event_id: &str, sender: &str, body: &str) -> MessageInfo {
         MessageInfo {
+            item_id: event_id.into(),
+            send_state: String::new(),
             event_id: event_id.into(),
             sender: sender.into(),
             body: body.into(),

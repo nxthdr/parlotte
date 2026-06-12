@@ -25,8 +25,9 @@ settings:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "0.1.0"
     # Build number — must increase for every TestFlight/App Store upload of the
-    # same marketing version. 10 = typing-indicator overlap fix.
-    CURRENT_PROJECT_VERSION: "10"
+    # same marketing version. 11 = matrix-sdk Timeline migration + typing-row
+    # spacing fix.
+    CURRENT_PROJECT_VERSION: "11"
     CODE_SIGN_STYLE: Automatic
     ENABLE_HARDENED_RUNTIME: YES
 

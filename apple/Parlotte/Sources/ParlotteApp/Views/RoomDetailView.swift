@@ -131,14 +131,21 @@ struct RoomDetailView: View {
             messageList
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            // Typing indicator (sibling below the list; the pinned list frame
-            // above keeps the scroll content from overflowing onto it).
-            if !appState.currentRoomTypingUsers.isEmpty {
-                TypingIndicator(userIds: appState.currentRoomTypingUsers)
-                    .padding(.horizontal, Spacing.lg)
-                    .padding(.vertical, Spacing.xs)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            // Typing indicator. This row is ALWAYS present at a fixed height so
+            // the message list's frame never changes when someone starts or
+            // stops typing — otherwise the list resizes and the messages jump
+            // up/down. The indicator text simply fades in/out within the
+            // reserved space.
+            HStack(spacing: 0) {
+                if !appState.currentRoomTypingUsers.isEmpty {
+                    TypingIndicator(userIds: appState.currentRoomTypingUsers)
+                        .transition(.opacity)
+                }
+                Spacer(minLength: 0)
             }
+            .padding(.horizontal, Spacing.lg)
+            .frame(height: 15)
+            .animation(.easeInOut(duration: 0.15), value: appState.currentRoomTypingUsers.isEmpty)
 
             // Compose area
             VStack(spacing: 0) {
@@ -279,11 +286,8 @@ struct RoomDetailView: View {
         // local so the enumerated array and the subscripts are the same value.
         let visible = appState.visibleMessages
         return MessageScrollView(
-            lastItemId: visible.last?.eventId,
-            firstItemId: visible.first?.eventId,
-            // Reserve the typing indicator's height so its appearance re-pins
-            // the bottom and doesn't clip the last message under it.
-            bottomInset: appState.currentRoomTypingUsers.isEmpty ? 0 : 28,
+            lastItemId: visible.last?.itemId,
+            firstItemId: visible.first?.itemId,
             onScrollToTop: {
                 if appState.hasMoreMessages && !appState.isLoadingMoreMessages {
                     Task { await appState.loadMoreMessages() }
@@ -320,7 +324,7 @@ struct RoomDetailView: View {
                     .padding(.vertical, Spacing.md)
                 }
 
-                ForEach(Array(visible.enumerated()), id: \.element.eventId) { index, message in
+                ForEach(Array(visible.enumerated()), id: \.element.itemId) { index, message in
                     if index == 0 {
                         DateSeparator(timestamp: message.timestampMs)
                     } else {
@@ -386,7 +390,10 @@ struct RoomDetailView: View {
                 }
             }
             .padding(.horizontal, Spacing.md)
-            .padding(.vertical, Spacing.md)
+            .padding(.top, Spacing.md)
+            // Keep the last message close to the typing line / composer; the
+            // always-reserved typing row already provides separation below.
+            .padding(.bottom, Spacing.xs)
         }
     }
 
@@ -963,12 +970,9 @@ private struct MediaImageView: View {
                 .frame(width: maxWidth, height: maxWidth / aspectRatio)
             }
         }
-        .task(id: message.eventId) {
-            // Optimistic path: bytes we just uploaded are held locally.
+        .task(id: message.itemId) {
             let bytes: Data?
-            if let pending = appState.pendingAttachments[message.eventId] {
-                bytes = pending
-            } else if let mxc = message.mediaSource {
+            if let mxc = message.mediaSource {
                 bytes = await appState.loadMedia(mxcUri: mxc)
             } else {
                 bytes = nil
@@ -1080,15 +1084,6 @@ private struct MediaFileView: View {
         errorText = nil
         Task {
             defer { isDownloading = false }
-            // Pending (just-uploaded) bytes are stored locally.
-            if let pending = appState.pendingAttachments[message.eventId] {
-                do {
-                    try pending.write(to: destination)
-                } catch {
-                    errorText = error.displayMessage
-                }
-                return
-            }
             guard let mxc = message.mediaSource else {
                 errorText = "No media source"
                 return

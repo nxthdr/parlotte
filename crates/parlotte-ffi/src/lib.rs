@@ -118,6 +118,8 @@ impl From<CoreReactionInfo> for ReactionInfo {
 
 #[derive(uniffi::Record)]
 pub struct MessageInfo {
+    pub item_id: String,
+    pub send_state: String,
     pub event_id: String,
     pub sender: String,
     pub body: String,
@@ -137,6 +139,8 @@ pub struct MessageInfo {
 impl From<CoreMessageInfo> for MessageInfo {
     fn from(m: CoreMessageInfo) -> Self {
         Self {
+            item_id: m.item_id,
+            send_state: m.send_state,
             event_id: m.event_id,
             sender: m.sender,
             body: m.body,
@@ -485,6 +489,26 @@ impl parlotte_core::SyncListener for SyncListenerBridge {
     }
 }
 
+/// Callback for room timeline updates. `on_timeline_update` is invoked with a
+/// complete, ordered (oldest-first) snapshot of the active room's messages on
+/// every change.
+#[uniffi::export(callback_interface)]
+pub trait ParlotteTimelineListener: Send + Sync {
+    fn on_timeline_update(&self, messages: Vec<MessageInfo>);
+}
+
+/// Bridge from the FFI callback to the core TimelineListener trait.
+struct TimelineListenerBridge {
+    inner: Box<dyn ParlotteTimelineListener>,
+}
+
+impl parlotte_core::TimelineListener for TimelineListenerBridge {
+    fn on_timeline_update(&self, messages: Vec<CoreMessageInfo>) {
+        self.inner
+            .on_timeline_update(messages.into_iter().map(Into::into).collect());
+    }
+}
+
 /// A session-level event emitted by the matrix-sdk. See
 /// [`ParlotteSessionChangeListener`].
 #[derive(uniffi::Enum)]
@@ -829,6 +853,63 @@ impl ParlotteClientFFI {
         self.inner.is_syncing()
     }
 
+    // -- Timeline (active room) --
+
+    pub fn start_timeline(
+        &self,
+        room_id: String,
+        listener: Box<dyn ParlotteTimelineListener>,
+    ) -> Result<(), ParlotteError> {
+        let bridge = Arc::new(TimelineListenerBridge { inner: listener });
+        Ok(self.inner.start_timeline(&room_id, bridge)?)
+    }
+
+    pub fn stop_timeline(&self) {
+        self.inner.stop_timeline();
+    }
+
+    pub fn is_timeline_active(&self, room_id: String) -> bool {
+        self.inner.is_timeline_active(&room_id)
+    }
+
+    pub fn paginate_timeline_back(
+        &self,
+        room_id: String,
+        num_events: u16,
+    ) -> Result<bool, ParlotteError> {
+        Ok(self.inner.paginate_timeline_back(&room_id, num_events)?)
+    }
+
+    pub fn timeline_send_message(
+        &self,
+        room_id: String,
+        body: String,
+    ) -> Result<(), ParlotteError> {
+        Ok(self.inner.timeline_send_message(&room_id, &body)?)
+    }
+
+    pub fn timeline_send_reply(
+        &self,
+        room_id: String,
+        in_reply_to: String,
+        body: String,
+    ) -> Result<(), ParlotteError> {
+        Ok(self
+            .inner
+            .timeline_send_reply(&room_id, &in_reply_to, &body)?)
+    }
+
+    pub fn timeline_toggle_reaction(
+        &self,
+        room_id: String,
+        target_event_id: String,
+        key: String,
+    ) -> Result<(), ParlotteError> {
+        Ok(self
+            .inner
+            .timeline_toggle_reaction(&room_id, &target_event_id, &key)?)
+    }
+
     pub fn recovery_state(&self) -> RecoveryState {
         self.inner.recovery_state().into()
     }
@@ -962,6 +1043,8 @@ mod tests {
     #[test]
     fn message_info_converts_all_fields() {
         let core = CoreMessageInfo {
+            item_id: "$evt:example.com".into(),
+            send_state: String::new(),
             event_id: "$evt:example.com".into(),
             sender: "@alice:example.com".into(),
             body: "Hello".into(),
@@ -994,6 +1077,8 @@ mod tests {
     #[test]
     fn message_info_converts_none_formatted_body() {
         let core = CoreMessageInfo {
+            item_id: "$e:x.com".into(),
+            send_state: String::new(),
             event_id: "$e:x.com".into(),
             sender: "@b:x.com".into(),
             body: "plain".into(),
@@ -1019,6 +1104,8 @@ mod tests {
     #[test]
     fn message_info_converts_media_fields() {
         let core = CoreMessageInfo {
+            item_id: "$img:example.com".into(),
+            send_state: String::new(),
             event_id: "$img:example.com".into(),
             sender: "@alice:example.com".into(),
             body: "photo.png".into(),
@@ -1063,6 +1150,8 @@ mod tests {
     #[test]
     fn message_info_converts_reactions() {
         let core = CoreMessageInfo {
+            item_id: "$msg:example.com".into(),
+            send_state: String::new(),
             event_id: "$msg:example.com".into(),
             sender: "@bob:example.com".into(),
             body: "Hello".into(),
@@ -1101,7 +1190,9 @@ mod tests {
     fn message_batch_converts_with_token() {
         let core = CoreMessageBatch {
             messages: vec![CoreMessageInfo {
-                event_id: "$1:x.com".into(),
+                item_id: "$1:x.com".into(),
+            send_state: String::new(),
+            event_id: "$1:x.com".into(),
                 sender: "@a:x.com".into(),
                 body: "msg".into(),
                 formatted_body: None,

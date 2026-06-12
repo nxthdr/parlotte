@@ -619,9 +619,16 @@ mod tests {
         let bob_msgs = bob.messages(&room_id, 50, None).unwrap().messages;
         let last_event_id = &bob_msgs.last().unwrap().event_id;
         bob.send_read_receipt(&room_id, last_event_id).unwrap();
+        // With the event cache enabled (required by the Timeline API), the
+        // computed unread count clears once the public read receipt has
+        // round-tripped through sync — one extra sync cycle, which the app's
+        // continuous sync loop performs automatically. A single sync_once can
+        // observe the receipt mid-flight, so settle over two cycles.
+        bob.sync_once().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(500));
         bob.sync_once().unwrap();
 
-        // After sending the read receipt and syncing, unread count should be 0
+        // After the read receipt settles, the unread count should be 0
         let bob_rooms = bob.rooms().unwrap();
         let room = bob_rooms.iter().find(|r| r.id == room_id).unwrap();
         assert_eq!(
@@ -1446,5 +1453,141 @@ mod tests {
             alice.ignored_users().unwrap().is_empty(),
             "ignore list should be empty after unignore"
         );
+    }
+
+    // -- Timeline API: display, local echo, and back-pagination --
+
+    use parlotte_core::{MessageInfo, SyncListener, TimelineListener};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    /// Stores the most recent timeline snapshot delivered by the core.
+    struct SnapshotCollector {
+        latest: Mutex<Vec<MessageInfo>>,
+    }
+
+    impl SnapshotCollector {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                latest: Mutex::new(Vec::new()),
+            })
+        }
+        fn snapshot(&self) -> Vec<MessageInfo> {
+            self.latest.lock().unwrap().clone()
+        }
+    }
+
+    impl TimelineListener for SnapshotCollector {
+        fn on_timeline_update(&self, messages: Vec<MessageInfo>) {
+            *self.latest.lock().unwrap() = messages;
+        }
+    }
+
+    /// Drives the persistent sync loop so the timeline receives remote echoes.
+    struct NoopSync;
+    impl SyncListener for NoopSync {
+        fn on_sync_update(&self) {}
+    }
+
+    /// Poll the collector until `predicate` holds or `timeout` elapses; returns
+    /// the last observed snapshot either way.
+    fn wait_for(
+        collector: &SnapshotCollector,
+        timeout: Duration,
+        predicate: impl Fn(&[MessageInfo]) -> bool,
+    ) -> Vec<MessageInfo> {
+        let start = Instant::now();
+        loop {
+            let snap = collector.snapshot();
+            if predicate(&snap) || start.elapsed() > timeout {
+                return snap;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    #[test]
+    fn timeline_displays_messages_and_local_echo() {
+        require_synapse();
+        let (alice, alice_id) = register_and_login("tl_alice");
+
+        let room_id = alice.create_room("Timeline Test", false).unwrap();
+        alice.sync_once().unwrap();
+
+        // A message sent the classic (room-based) way, before subscribing.
+        alice.send_message(&room_id, "first message").unwrap();
+        alice.sync_once().unwrap();
+
+        // Keep sync running so the timeline gets remote echoes / send confirms.
+        alice.start_sync(Arc::new(NoopSync)).unwrap();
+
+        let collector = SnapshotCollector::new();
+        alice.start_timeline(&room_id, collector.clone()).unwrap();
+
+        // The initial snapshot (or a near-immediate one) shows the existing message.
+        let snap = wait_for(&collector, Duration::from_secs(15), |m| {
+            m.iter().any(|x| x.body == "first message")
+        });
+        assert!(
+            snap.iter().any(|m| m.body == "first message"),
+            "timeline should show the existing message; got {:?}",
+            snap.iter().map(|m| m.body.clone()).collect::<Vec<_>>()
+        );
+
+        // Send through the timeline: a local echo should appear, then resolve
+        // to a confirmed message with a real event id.
+        alice
+            .timeline_send_message(&room_id, "echo test")
+            .unwrap();
+        let snap = wait_for(&collector, Duration::from_secs(15), |m| {
+            m.iter()
+                .any(|x| x.body == "echo test" && !x.event_id.is_empty())
+        });
+        let echo = snap
+            .iter()
+            .find(|m| m.body == "echo test")
+            .expect("local echo should appear in the timeline");
+        assert_eq!(echo.sender, alice_id, "echo should be from the sender");
+        assert!(
+            !echo.event_id.is_empty(),
+            "echo should resolve to a real event id once sent"
+        );
+
+        alice.stop_timeline();
+        alice.stop_sync();
+    }
+
+    #[test]
+    fn timeline_paginates_backwards() {
+        require_synapse();
+        let (alice, _) = register_and_login("tl_page_alice");
+        let room_id = alice.create_room("Pagination Test", false).unwrap();
+        alice.sync_once().unwrap();
+
+        for i in 0..6 {
+            alice
+                .send_message(&room_id, &format!("msg {i}"))
+                .unwrap();
+        }
+        alice.sync_once().unwrap();
+
+        let collector = SnapshotCollector::new();
+        alice.start_timeline(&room_id, collector.clone()).unwrap();
+        wait_for(&collector, Duration::from_secs(15), |m| {
+            m.iter().any(|x| x.body.starts_with("msg "))
+        });
+
+        // Back-paginating a small room returns true (start of room reached) and
+        // must not error.
+        let reached_start = alice.paginate_timeline_back(&room_id, 50).unwrap();
+        assert!(reached_start, "a small room should reach the start");
+
+        let snap = collector.snapshot();
+        assert!(
+            snap.iter().filter(|m| m.body.starts_with("msg ")).count() >= 1,
+            "timeline should retain the sent messages after pagination"
+        );
+
+        alice.stop_timeline();
     }
 }

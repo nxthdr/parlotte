@@ -49,23 +49,12 @@ struct AppStateEdgeCaseTests {
         )
     }
 
-    /// Seed a valid end-token so loadMoreMessages proceeds past the guard.
-    /// Uses the pagination path: initial messages() call returns endToken.
-    private mutating func seedEndToken(_ token: String = "tok-1") async {
-        mock.messagesResult = MessageBatch(
-            messages: [makeMessage(eventId: "$seed:example.com")],
-            endToken: token
-        )
-        await appState.refreshMessages()
-        mock.messagesCalls.removeAll()
-    }
-
     // MARK: - loadMoreMessages
 
     @Test("loadMoreMessages clears isLoadingMoreMessages after an error")
     mutating func loadMoreMessagesErrorClearsLoadingFlag() async {
-        await seedEndToken()
-        mock.messagesError = ParlotteError.Network(message: "boom")
+        appState.hasMoreMessages = true
+        mock.paginateTimelineBackError = ParlotteError.Network(message: "boom")
 
         await appState.loadMoreMessages()
 
@@ -74,99 +63,44 @@ struct AppStateEdgeCaseTests {
 
     @Test("loadMoreMessages bails while another load is in flight")
     mutating func loadMoreMessagesConcurrencyGuard() async {
-        await seedEndToken()
+        appState.hasMoreMessages = true
         appState.isLoadingMoreMessages = true
 
         await appState.loadMoreMessages()
 
-        // Guard should prevent any network call.
-        #expect(mock.messagesCalls.isEmpty)
+        // Guard should prevent any pagination call.
+        #expect(mock.paginateTimelineBackCalls.isEmpty)
         // We only set the flag, never cleared it — the method must not have
         // touched it (no isLoadingMoreMessages = false side-effect).
         #expect(appState.isLoadingMoreMessages == true)
     }
 
-    @Test("loadMoreMessages keeps paginating on an all-duplicate page that still has a token")
-    mutating func loadMoreMessagesAllDuplicatesWithToken() async {
-        await seedEndToken()
-        // Server returns only duplicates, but still offers a next token — the
-        // timeline grew between the initial fetch and this call. We must NOT
-        // treat "nothing new" as "no more history": advance to the token.
-        mock.messagesResult = MessageBatch(
-            messages: [makeMessage(eventId: "$seed:example.com")],
-            endToken: "tok-2"
-        )
+    @Test("loadMoreMessages keeps paging while the timeline reports more history")
+    mutating func loadMoreMessagesKeepsPaging() async {
+        appState.hasMoreMessages = true
+        mock.paginateReachedStart = false
 
         await appState.loadMoreMessages()
 
         #expect(appState.hasMoreMessages == true)
-        // The cursor advanced, so a further call does hit the network again.
-        mock.messagesCalls.removeAll()
+        // Still more history, so a further call paginates again.
+        mock.paginateTimelineBackCalls.removeAll()
         await appState.loadMoreMessages()
-        #expect(mock.messagesCalls.first?.from == "tok-2")
+        #expect(mock.paginateTimelineBackCalls.count == 1)
     }
 
-    @Test("loadMoreMessages stops paginating only when the server returns no token")
-    mutating func loadMoreMessagesStopsOnNilToken() async {
-        await seedEndToken()
-        mock.messagesResult = MessageBatch(
-            messages: [makeMessage(eventId: "$older:example.com")],
-            endToken: nil
-        )
+    @Test("loadMoreMessages stops once the timeline reports the start of the room")
+    mutating func loadMoreMessagesStopsAtStart() async {
+        appState.hasMoreMessages = true
+        mock.paginateReachedStart = true
 
         await appState.loadMoreMessages()
 
         #expect(appState.hasMoreMessages == false)
-        // nil token ends history: a second call is a no-op (guard fires).
-        mock.messagesCalls.removeAll()
+        // Reaching the start ends history: a second call is a no-op (guard fires).
+        mock.paginateTimelineBackCalls.removeAll()
         await appState.loadMoreMessages()
-        #expect(mock.messagesCalls.isEmpty)
-    }
-
-    // MARK: - appendNewMessages edit echo
-
-    @Test("appendNewMessages applies a formatted-only edit echo")
-    mutating func appendNewMessagesAppliesFormattedEdit() async {
-        // Mirrors an optimistic edit: body set, formattedBody cleared, isEdited
-        // true. The server echo has the same body/isEdited but a rich
-        // formattedBody — it must replace the plain optimistic version.
-        let optimistic = MessageInfo(
-            eventId: "$e:example.com", sender: "@me:x.com", body: "hello",
-            formattedBody: nil, messageType: "text", timestampMs: 1_700_000_000_000,
-            isEdited: true, repliedToEventId: nil, mediaSource: nil, mediaMimeType: nil,
-            mediaWidth: nil, mediaHeight: nil, mediaSize: nil, reactions: []
-        )
-        appState.messages = [optimistic]
-
-        let serverEcho = MessageInfo(
-            eventId: "$e:example.com", sender: "@me:x.com", body: "hello",
-            formattedBody: "<strong>hello</strong>", messageType: "text",
-            timestampMs: 1_700_000_000_000, isEdited: true, repliedToEventId: nil,
-            mediaSource: nil, mediaMimeType: nil, mediaWidth: nil, mediaHeight: nil,
-            mediaSize: nil, reactions: []
-        )
-        mock.messagesResult = MessageBatch(messages: [serverEcho], endToken: nil)
-
-        await appState.appendNewMessages()
-
-        #expect(appState.messages.count == 1)
-        #expect(appState.messages[0].formattedBody == "<strong>hello</strong>",
-                "formatted-only edit echo should be applied")
-    }
-
-    // MARK: - toggleReaction
-
-    @Test("toggleReaction on a nonexistent message is a no-op")
-    mutating func toggleReactionMissingMessage() async {
-        appState.messages = [makeMessage(eventId: "$known:example.com")]
-        mock.sendReactionCalls.removeAll()
-
-        await appState.toggleReaction(eventId: "$nonexistent:example.com", key: "👍")
-
-        #expect(mock.sendReactionCalls.isEmpty)
-        #expect(mock.redactReactionCalls.isEmpty)
-        #expect(appState.messages[0].reactions.isEmpty)
-        #expect(appState.errorMessage == nil)
+        #expect(mock.paginateTimelineBackCalls.isEmpty)
     }
 
     // MARK: - inviteUser
@@ -222,23 +156,15 @@ struct AppStateEdgeCaseTests {
         #expect(appState.errorMessage != nil)
     }
 
-    // MARK: - deleteMessage revert
+    // MARK: - deleteMessage
 
-    @Test("deleteMessage revert restores the message at its original index")
-    mutating func deleteMessageRevertPreservesPosition() async {
-        appState.messages = [
-            makeMessage(eventId: "$a:example.com", body: "first"),
-            makeMessage(eventId: "$b:example.com", body: "middle"),
-            makeMessage(eventId: "$c:example.com", body: "last"),
-        ]
+    @Test("deleteMessage surfaces a redaction error")
+    mutating func deleteMessageSurfacesError() async {
         mock.redactMessageError = ParlotteError.Room(message: "forbidden")
 
         await appState.deleteMessage(eventId: "$b:example.com")
 
-        #expect(appState.messages.count == 3)
-        #expect(appState.messages[0].eventId == "$a:example.com")
-        #expect(appState.messages[1].eventId == "$b:example.com")
-        #expect(appState.messages[2].eventId == "$c:example.com")
+        // The timeline owns the array; on failure we only surface the error.
         #expect(appState.errorMessage != nil)
     }
 }

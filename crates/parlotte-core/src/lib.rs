@@ -7,6 +7,7 @@ pub mod recovery;
 pub mod room;
 pub mod session;
 pub mod sync;
+pub mod timeline;
 pub mod verification;
 
 pub use client::ParlotteClient;
@@ -19,6 +20,7 @@ pub use recovery::RecoveryState;
 pub use room::{PublicRoomInfo, RoomInfo, RoomMemberInfo, UserSearchResult};
 pub use session::{SessionChangeEvent, SessionChangeListener};
 pub use sync::SyncListener;
+pub use timeline::TimelineListener;
 pub use verification::{
     EmojiInfo, VerificationListener, VerificationRequestInfo, VerificationState,
 };

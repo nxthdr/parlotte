@@ -53,376 +53,176 @@ struct AppStateTests {
 
     // MARK: - Send Message
 
-    @Test("Send message appends optimistic placeholder")
-    mutating func sendMessageAppendsOptimistically() async {
+    @Test("Send message delegates to the timeline (no manual placeholder)")
+    mutating func sendMessageDelegatesToTimeline() async {
         await appState.sendMessage(body: "Hello world")
 
-        #expect(appState.messages.count == 1)
-        #expect(appState.messages[0].body == "Hello world")
-        #expect(appState.messages[0].sender == "@alice:example.com")
-        #expect(appState.messages[0].eventId.hasPrefix("~optimistic:"))
+        #expect(mock.timelineSendMessageCalls.count == 1)
+        #expect(mock.timelineSendMessageCalls[0].roomId == "!room:example.com")
+        #expect(mock.timelineSendMessageCalls[0].body == "Hello world")
     }
 
     @Test("Send message trims whitespace")
     mutating func sendMessageTrimsWhitespace() async {
         await appState.sendMessage(body: "  spaced  ")
 
-        #expect(mock.sendMessageCalls.count == 1)
-        #expect(mock.sendMessageCalls[0].body == "spaced")
+        #expect(mock.timelineSendMessageCalls.count == 1)
+        #expect(mock.timelineSendMessageCalls[0].body == "spaced")
     }
 
     @Test("Send message ignores empty body")
     mutating func sendMessageIgnoresEmpty() async {
         await appState.sendMessage(body: "   ")
-
-        #expect(appState.messages.count == 0)
-        #expect(mock.sendMessageCalls.count == 0)
+        #expect(mock.timelineSendMessageCalls.isEmpty)
     }
 
-    @Test("Send message removes placeholder on failure")
-    mutating func sendMessageRemovesPlaceholderOnFailure() async {
-        mock.sendMessageError = ParlotteError.Room(message: "server error")
-
+    @Test("Send message surfaces an error on failure")
+    mutating func sendMessageSurfacesError() async {
+        mock.timelineSendMessageError = ParlotteError.Room(message: "server error")
         await appState.sendMessage(body: "Will fail")
-
-        #expect(appState.messages.count == 0, "Placeholder should be removed on failure")
         #expect(appState.errorMessage != nil)
     }
 
     @Test("Send message requires selected room")
     mutating func sendMessageRequiresSelectedRoom() async {
         appState.selectedRoomId = nil
-
         await appState.sendMessage(body: "No room")
-
-        #expect(appState.messages.count == 0)
-        #expect(mock.sendMessageCalls.count == 0)
+        #expect(mock.timelineSendMessageCalls.isEmpty)
     }
 
     // MARK: - Send Reply
 
-    @Test("Send reply appends optimistic placeholder with reply ID")
-    mutating func sendReplyAppendsOptimisticallyWithReplyId() async {
-        let original = makeMessage(eventId: "$original:example.com")
-        appState.messages = [original]
-
-        await appState.sendReply(eventId: "$original:example.com", body: "My reply")
-
-        #expect(appState.messages.count == 2)
-        let reply = appState.messages[1]
-        #expect(reply.body == "My reply")
-        #expect(reply.repliedToEventId == "$original:example.com")
-        #expect(reply.eventId.hasPrefix("~optimistic:"))
-    }
-
-    @Test("Send reply calls server with correct args")
-    mutating func sendReplyCallsServerWithCorrectArgs() async {
+    @Test("Send reply delegates to the timeline with the reply target")
+    mutating func sendReplyDelegatesToTimeline() async {
         await appState.sendReply(eventId: "$evt:x.com", body: "reply text")
 
-        #expect(mock.sendReplyCalls.count == 1)
-        #expect(mock.sendReplyCalls[0].roomId == "!room:example.com")
-        #expect(mock.sendReplyCalls[0].eventId == "$evt:x.com")
-        #expect(mock.sendReplyCalls[0].body == "reply text")
+        #expect(mock.timelineSendReplyCalls.count == 1)
+        #expect(mock.timelineSendReplyCalls[0].roomId == "!room:example.com")
+        #expect(mock.timelineSendReplyCalls[0].inReplyTo == "$evt:x.com")
+        #expect(mock.timelineSendReplyCalls[0].body == "reply text")
     }
 
-    @Test("Send reply removes placeholder on failure")
-    mutating func sendReplyRemovesPlaceholderOnFailure() async {
-        mock.sendReplyError = ParlotteError.Room(message: "failed")
-
-        await appState.sendReply(eventId: "$evt:x.com", body: "Will fail")
-
-        #expect(appState.messages.count == 0)
-        #expect(appState.errorMessage != nil)
+    @Test("Send reply ignores empty body")
+    mutating func sendReplyIgnoresEmpty() async {
+        await appState.sendReply(eventId: "$evt:x.com", body: "   ")
+        #expect(mock.timelineSendReplyCalls.isEmpty)
     }
 
     // MARK: - Edit Message
 
-    @Test("Edit message updates body optimistically")
-    mutating func editMessageUpdatesBodyOptimistically() async {
-        appState.messages = [makeMessage(eventId: "$e1:x.com", body: "Original")]
-
-        await appState.editMessage(eventId: "$e1:x.com", newBody: "Updated")
-
-        #expect(appState.messages[0].body == "Updated")
-        #expect(appState.messages[0].isEdited == true)
-        #expect(appState.messages[0].formattedBody == nil)
-    }
-
     @Test("Edit message calls server")
     mutating func editMessageCallsServer() async {
-        appState.messages = [makeMessage(eventId: "$e1:x.com", body: "Original")]
-
         await appState.editMessage(eventId: "$e1:x.com", newBody: "Updated")
 
         #expect(mock.editMessageCalls.count == 1)
+        #expect(mock.editMessageCalls[0].eventId == "$e1:x.com")
         #expect(mock.editMessageCalls[0].newBody == "Updated")
     }
 
-    @Test("Edit message reverts on failure")
-    mutating func editMessageRevertsOnFailure() async {
-        let msg = makeMessage(eventId: "$e1:x.com", body: "Original")
-        appState.messages = [msg]
+    @Test("Edit message surfaces an error on failure")
+    mutating func editMessageSurfacesError() async {
         mock.editMessageError = ParlotteError.Room(message: "forbidden")
-
         await appState.editMessage(eventId: "$e1:x.com", newBody: "Updated")
-
-        #expect(appState.messages[0].body == "Original", "Should revert to original body")
-        #expect(appState.messages[0].isEdited == false, "Should revert isEdited flag")
         #expect(appState.errorMessage != nil)
     }
 
-    @Test("Edit nonexistent message is no-op")
-    mutating func editNonexistentMessageIsNoOp() async {
-        appState.messages = [makeMessage(eventId: "$e1:x.com")]
-
-        await appState.editMessage(eventId: "$nonexistent:x.com", newBody: "Update")
-
-        #expect(mock.editMessageCalls.count == 0)
+    @Test("Edit with an empty event ID (local echo) is a no-op")
+    mutating func editEmptyEventIdIsNoOp() async {
+        await appState.editMessage(eventId: "", newBody: "Update")
+        #expect(mock.editMessageCalls.isEmpty)
     }
 
     // MARK: - Delete Message
 
-    @Test("Delete message removes optimistically")
-    mutating func deleteMessageRemovesOptimistically() async {
-        appState.messages = [
-            makeMessage(eventId: "$e1:x.com", body: "First"),
-            makeMessage(eventId: "$e2:x.com", body: "Second"),
-        ]
-
-        await appState.deleteMessage(eventId: "$e1:x.com")
-
-        #expect(appState.messages.count == 1)
-        #expect(appState.messages[0].eventId == "$e2:x.com")
-    }
-
     @Test("Delete message calls server")
     mutating func deleteMessageCallsServer() async {
-        appState.messages = [makeMessage(eventId: "$e1:x.com")]
-
         await appState.deleteMessage(eventId: "$e1:x.com")
 
         #expect(mock.redactMessageCalls.count == 1)
         #expect(mock.redactMessageCalls[0].eventId == "$e1:x.com")
     }
 
-    @Test("Delete message reverts on failure")
-    mutating func deleteMessageRevertsOnFailure() async {
-        appState.messages = [
-            makeMessage(eventId: "$e1:x.com", body: "Keep me"),
-        ]
-        mock.redactMessageError = ParlotteError.Room(message: "forbidden")
-
-        await appState.deleteMessage(eventId: "$e1:x.com")
-
-        #expect(appState.messages.count == 1, "Should revert deletion")
-        #expect(appState.messages[0].body == "Keep me")
-        #expect(appState.errorMessage != nil)
+    @Test("Delete with an empty event ID (local echo) is a no-op")
+    mutating func deleteEmptyEventIdIsNoOp() async {
+        await appState.deleteMessage(eventId: "")
+        #expect(mock.redactMessageCalls.isEmpty)
     }
 
-    @Test("Delete nonexistent message is no-op")
-    mutating func deleteNonexistentMessageIsNoOp() async {
-        appState.messages = [makeMessage(eventId: "$e1:x.com")]
+    // MARK: - Timeline snapshots
 
-        await appState.deleteMessage(eventId: "$nonexistent:x.com")
-
-        #expect(appState.messages.count == 1)
-        #expect(mock.redactMessageCalls.count == 0)
-    }
-
-    // MARK: - Append New Messages (sync handler)
-
-    @Test("Append new messages replaces a sent message's placeholder with its echo")
-    mutating func appendNewMessagesReplacesOptimisticPlaceholders() async {
-        // Send through the real flow so the placeholder's real event ID is
-        // tracked; only then should its echo replace it.
-        mock.sendMessageResult = "$real:example.com"
-        await appState.sendMessage(body: "Hello")
-        #expect(appState.messages.count == 1)
-        #expect(appState.messages[0].eventId.hasPrefix("~optimistic:"))
-
-        mock.messagesResult = MessageBatch(
-            messages: [makeMessage(eventId: "$real:example.com", sender: "@alice:example.com", body: "Hello")],
-            endToken: nil
+    @Test("Timeline snapshot replaces the message array")
+    mutating func timelineSnapshotReplacesMessages() async {
+        appState.handleTimelineUpdate(
+            roomId: "!room:example.com",
+            messages: [makeMessage(eventId: "$a:x.com", body: "One"),
+                       makeMessage(eventId: "$b:x.com", body: "Two")]
         )
-
-        await appState.appendNewMessages()
-
-        #expect(appState.messages.count == 1)
-        #expect(appState.messages[0].eventId == "$real:example.com", "Placeholder should be replaced")
-    }
-
-    @Test("Append new messages deduplicates")
-    mutating func appendNewMessagesDeduplicates() async {
-        let existing = makeMessage(eventId: "$e1:x.com", body: "Exists")
-        appState.messages = [existing]
-        mock.messagesResult = MessageBatch(messages: [existing], endToken: nil)
-
-        await appState.appendNewMessages()
-
-        #expect(appState.messages.count == 1, "Should not duplicate")
-    }
-
-    @Test("Append new messages adds genuinely new ones")
-    mutating func appendNewMessagesAddsGenuinelyNew() async {
-        appState.messages = [makeMessage(eventId: "$e1:x.com", body: "Old")]
-        mock.messagesResult = MessageBatch(
-            messages: [
-                makeMessage(eventId: "$e1:x.com", body: "Old"),
-                makeMessage(eventId: "$e2:x.com", body: "New"),
-            ],
-            endToken: nil
-        )
-
-        await appState.appendNewMessages()
-
         #expect(appState.messages.count == 2)
-        #expect(appState.messages[1].body == "New")
-    }
+        #expect(appState.messages[1].body == "Two")
 
-    @Test("Append new messages picks up edits")
-    mutating func appendNewMessagesPicksUpEdits() async {
-        appState.messages = [makeMessage(eventId: "$e1:x.com", body: "Original")]
-        mock.messagesResult = MessageBatch(
-            messages: [
-                MessageInfo(
-                    eventId: "$e1:x.com", sender: "@bob:example.com",
-                    body: "Edited", formattedBody: nil, messageType: "text",
-                    timestampMs: 1_700_000_000_000, isEdited: true, repliedToEventId: nil,
-                    mediaSource: nil, mediaMimeType: nil, mediaWidth: nil, mediaHeight: nil, mediaSize: nil,
-                    reactions: []
-                ),
-            ],
-            endToken: nil
+        // A later snapshot fully replaces — no merge, append or dedup.
+        appState.handleTimelineUpdate(
+            roomId: "!room:example.com",
+            messages: [makeMessage(eventId: "$c:x.com", body: "Three")]
         )
-
-        await appState.appendNewMessages()
-
         #expect(appState.messages.count == 1)
-        #expect(appState.messages[0].body == "Edited")
-        #expect(appState.messages[0].isEdited == true)
+        #expect(appState.messages[0].body == "Three")
     }
 
-    @Test("Append new messages removes redacted messages")
-    mutating func appendNewMessagesRemovesRedacted() async {
-        appState.messages = [
-            makeMessage(eventId: "$e1:x.com", body: "Keep"),
-            makeMessage(eventId: "$e2:x.com", body: "Redacted"),
-        ]
-        // Server only returns the non-redacted message
-        mock.messagesResult = MessageBatch(
-            messages: [makeMessage(eventId: "$e1:x.com", body: "Keep")],
-            endToken: nil
+    @Test("Timeline snapshot for a different room is discarded")
+    mutating func timelineSnapshotForOtherRoomDiscarded() async {
+        appState.handleTimelineUpdate(
+            roomId: "!other:example.com",
+            messages: [makeMessage(eventId: "$x:x.com", body: "Wrong room")]
         )
-
-        await appState.appendNewMessages()
-
-        #expect(appState.messages.count == 1)
-        #expect(appState.messages[0].eventId == "$e1:x.com")
-    }
-
-    @Test("Append new messages preserves optimistic placeholders when server has not confirmed")
-    mutating func appendNewMessagesPreservesOptimisticBeforeConfirmation() async {
-        appState.messages = [
-            makeMessage(eventId: "$e1:x.com", body: "Old"),
-            MessageInfo(
-                eventId: "~optimistic:abc", sender: "@alice:example.com",
-                body: "Sending...", formattedBody: nil, messageType: "text",
-                timestampMs: 1_700_000_001_000, isEdited: false, repliedToEventId: nil,
-                mediaSource: nil, mediaMimeType: nil, mediaWidth: nil, mediaHeight: nil, mediaSize: nil,
-                reactions: []
-            ),
-        ]
-        // Server returns the old message but not the optimistic one yet
-        mock.messagesResult = MessageBatch(
-            messages: [makeMessage(eventId: "$e1:x.com", body: "Old")],
-            endToken: nil
-        )
-
-        await appState.appendNewMessages()
-
-        #expect(appState.messages.count == 2, "Optimistic placeholder should be preserved")
-        #expect(appState.messages[1].eventId == "~optimistic:abc")
-    }
-
-    @Test("Append new messages does not mutate array when nothing changed")
-    mutating func appendNewMessagesNoMutationWhenUnchanged() async {
-        let msg = makeMessage(eventId: "$e1:x.com", body: "Same")
-        appState.messages = [msg]
-        mock.messagesResult = MessageBatch(messages: [msg], endToken: nil)
-
-        await appState.appendNewMessages()
-
-        #expect(appState.messages.count == 1)
-        #expect(appState.messages[0].body == "Same")
-    }
-
-    @Test("Append new messages skips when messages is empty")
-    mutating func appendNewMessagesSkipsWhenEmpty() async {
-        appState.messages = []
-        mock.messagesResult = MessageBatch(
-            messages: [makeMessage(eventId: "$e1:x.com", body: "Server msg")],
-            endToken: nil
-        )
-
-        await appState.appendNewMessages()
-
-        #expect(appState.messages.isEmpty, "Should bail early when messages is empty")
-        #expect(mock.messagesCalls.isEmpty, "Should not call server")
-    }
-
-    @Test("Sync with empty messages falls back to refreshMessages")
-    mutating func syncWithEmptyMessagesFallsBackToRefresh() async {
-        appState.messages = []
-        mock.messagesResult = MessageBatch(
-            messages: [makeMessage(eventId: "$e1:x.com", body: "History")],
-            endToken: nil
-        )
-
-        // Simulate what the sync handler does
-        if appState.messages.isEmpty {
-            await appState.refreshMessages()
-        } else {
-            await appState.appendNewMessages()
-        }
-
-        #expect(appState.messages.count == 1)
-        #expect(appState.messages[0].body == "History")
+        #expect(appState.messages.isEmpty)
     }
 
     // MARK: - Message Pagination
 
-    @Test("Load more messages prepends older messages")
-    mutating func loadMoreMessagesPrepends() async {
-        appState.messages = [makeMessage(eventId: "$e3:x.com", body: "Latest")]
+    @Test("Load more paginates the timeline and keeps paging when more remains")
+    mutating func loadMorePaginatesTimeline() async {
         appState.hasMoreMessages = true
-        mock.messagesResult = MessageBatch(
-            messages: [makeMessage(eventId: "$e3:x.com", body: "Latest")],
-            endToken: "token123"
-        )
-        await appState.refreshMessages()
+        mock.paginateReachedStart = false
 
-        mock.messagesResult = MessageBatch(
-            messages: [makeMessage(eventId: "$e1:x.com", body: "Oldest")],
-            endToken: "token456"
-        )
         await appState.loadMoreMessages()
 
-        #expect(appState.messages.count == 2)
-        #expect(appState.messages[0].body == "Oldest")
-        #expect(appState.messages[1].body == "Latest")
+        #expect(mock.paginateTimelineBackCalls.count == 1)
+        #expect(mock.paginateTimelineBackCalls[0].roomId == "!room:example.com")
+        #expect(appState.hasMoreMessages == true)
+    }
+
+    @Test("Load more stops when the start of the room is reached")
+    mutating func loadMoreStopsAtStart() async {
+        appState.hasMoreMessages = true
+        mock.paginateReachedStart = true
+
+        await appState.loadMoreMessages()
+
+        #expect(appState.hasMoreMessages == false)
+    }
+
+    @Test("Load more is a no-op when there is no more history")
+    mutating func loadMoreNoOpWhenExhausted() async {
+        appState.hasMoreMessages = false
+        await appState.loadMoreMessages()
+        #expect(mock.paginateTimelineBackCalls.isEmpty)
     }
 
     // MARK: - Room Selection
 
-    @Test("Selecting room clears messages")
+    @Test("Selecting room clears messages and re-arms pagination")
     mutating func selectingRoomClearsMessages() {
         appState.messages = [makeMessage()]
-        appState.hasMoreMessages = true
+        appState.hasMoreMessages = false
 
         appState.selectedRoomId = "!other:example.com"
 
+        // Switching rooms clears the old room's messages (the new room's
+        // timeline repopulates them) and assumes there may be older history to
+        // page in until a back-pagination proves otherwise.
         #expect(appState.messages.isEmpty)
-        #expect(appState.hasMoreMessages == false)
+        #expect(appState.hasMoreMessages == true)
     }
 
     @Test("Selecting nil room clears messages")
@@ -660,49 +460,6 @@ struct AppStateTests {
 
     // MARK: - Attachments
 
-    @Test("Send attachment appends optimistic placeholder with media fields")
-    mutating func sendAttachmentAppendsOptimistically() async {
-        let data = MediaTestHelpers.pngMagicBytes()
-        let url = MediaTestHelpers.makeTempFile(name: "photo.png", contents: data)
-        defer { MediaTestHelpers.removeTempFile(at: url) }
-
-        await appState.sendAttachment(fileURL: url)
-
-        #expect(appState.messages.count == 1)
-        let msg = appState.messages[0]
-        #expect(msg.eventId.hasPrefix("~optimistic:"))
-        #expect(msg.messageType == "image")
-        #expect(msg.body == "photo.png")
-        #expect(msg.mediaMimeType == "image/png")
-        #expect(msg.mediaSize == UInt64(data.count))
-        #expect(appState.pendingAttachments[msg.eventId] == data)
-    }
-
-    @Test("Send attachment classifies non-image as file")
-    mutating func sendAttachmentClassifiesNonImageAsFile() async {
-        let data = MediaTestHelpers.stringBytes("hello")
-        let url = MediaTestHelpers.makeTempFile(name: "notes.txt", contents: data)
-        defer { MediaTestHelpers.removeTempFile(at: url) }
-
-        await appState.sendAttachment(fileURL: url)
-
-        #expect(appState.messages.count == 1)
-        #expect(appState.messages[0].messageType == "file")
-    }
-
-    @Test("Send attachment removes placeholder and clears pending on failure")
-    mutating func sendAttachmentRemovesPlaceholderOnFailure() async {
-        mock.sendAttachmentError = ParlotteError.Room(message: "upload failed")
-        let url = MediaTestHelpers.makeTempFile(name: "fail.bin", contents: MediaTestHelpers.bytes([0x00]))
-        defer { MediaTestHelpers.removeTempFile(at: url) }
-
-        await appState.sendAttachment(fileURL: url)
-
-        #expect(appState.messages.isEmpty)
-        #expect(appState.pendingAttachments.isEmpty)
-        #expect(appState.errorMessage != nil)
-    }
-
     @Test("Send attachment calls client with correct args")
     mutating func sendAttachmentCallsClientWithArgs() async {
         let data = MediaTestHelpers.stringBytes("pdf bytes")
@@ -711,12 +468,37 @@ struct AppStateTests {
 
         await appState.sendAttachment(fileURL: url)
 
+        // The sent attachment surfaces via the timeline snapshot, not a local
+        // placeholder, so we only assert the upload was requested correctly.
         #expect(mock.sendAttachmentCalls.count == 1)
         let call = mock.sendAttachmentCalls[0]
         #expect(call.roomId == "!room:example.com")
         #expect(call.filename == "doc.pdf")
         #expect(call.mimeType == "application/pdf")
         #expect(call.data == data)
+    }
+
+    @Test("Send attachment classifies image dimensions are read for images")
+    mutating func sendAttachmentImageDetectsType() async {
+        let data = MediaTestHelpers.pngMagicBytes()
+        let url = MediaTestHelpers.makeTempFile(name: "photo.png", contents: data)
+        defer { MediaTestHelpers.removeTempFile(at: url) }
+
+        await appState.sendAttachment(fileURL: url)
+
+        #expect(mock.sendAttachmentCalls.count == 1)
+        #expect(mock.sendAttachmentCalls[0].mimeType == "image/png")
+    }
+
+    @Test("Send attachment surfaces an error on failure")
+    mutating func sendAttachmentSurfacesError() async {
+        mock.sendAttachmentError = ParlotteError.Room(message: "upload failed")
+        let url = MediaTestHelpers.makeTempFile(name: "fail.bin", contents: MediaTestHelpers.bytes([0x00]))
+        defer { MediaTestHelpers.removeTempFile(at: url) }
+
+        await appState.sendAttachment(fileURL: url)
+
+        #expect(appState.errorMessage != nil)
     }
 
     @Test("Send attachment requires selected room")
@@ -752,119 +534,37 @@ struct AppStateTests {
         #expect(result == nil)
     }
 
-    @Test("Append new messages drops pending attachments for replaced placeholders")
-    mutating func appendNewMessagesClearsPendingAttachments() async {
-        let url = MediaTestHelpers.makeTempFile(name: "img.png", contents: MediaTestHelpers.bytes([0xFF]))
-        defer { MediaTestHelpers.removeTempFile(at: url) }
-
-        mock.sendAttachmentResult = "$attach:x.com"
-        await appState.sendAttachment(fileURL: url)
-        #expect(appState.pendingAttachments.count == 1)
-
-        // Server confirms with the same event ID sendAttachment returned.
-        let realMsg = makeMessage(eventId: "$attach:x.com", sender: "@alice:example.com", body: "img.png")
-        mock.messagesResult = MessageBatch(messages: [realMsg], endToken: nil)
-
-        await appState.appendNewMessages()
-
-        #expect(appState.pendingAttachments.isEmpty)
-        #expect(!appState.messages.contains { $0.eventId.hasPrefix("~optimistic:") })
-    }
-
-    @Test("Logout clears pending attachments")
-    mutating func logoutClearsMediaState() async {
-        appState.pendingAttachments["~optimistic:foo"] = MediaTestHelpers.bytes([0x42])
-
-        await appState.logout()
-
-        #expect(appState.pendingAttachments.isEmpty)
-    }
 
     // MARK: - Reactions
 
-    @Test("Toggle reaction adds optimistic reaction")
-    mutating func toggleReactionAddsOptimistically() async {
-        let msg = makeMessage()
-        appState.messages = [msg]
+    @Test("Toggle reaction delegates to the timeline")
+    mutating func toggleReactionDelegatesToTimeline() async {
+        await appState.toggleReaction(eventId: "$msg:example.com", key: "\u{1f44d}")
 
-        await appState.toggleReaction(eventId: msg.eventId, key: "\u{1f44d}")
-
-        #expect(appState.messages[0].reactions.count == 1)
-        #expect(appState.messages[0].reactions[0].key == "\u{1f44d}")
-        #expect(appState.messages[0].reactions[0].sender == "@alice:example.com")
-        // Optimistic ID should be replaced with real one
-        #expect(appState.messages[0].reactions[0].eventId == "$reaction:example.com")
+        #expect(mock.timelineToggleReactionCalls.count == 1)
+        #expect(mock.timelineToggleReactionCalls[0].roomId == "!room:example.com")
+        #expect(mock.timelineToggleReactionCalls[0].targetEventId == "$msg:example.com")
+        #expect(mock.timelineToggleReactionCalls[0].key == "\u{1f44d}")
     }
 
-    @Test("Toggle reaction calls client with correct args")
-    mutating func toggleReactionCallsClient() async {
-        let msg = makeMessage()
-        appState.messages = [msg]
-
-        await appState.toggleReaction(eventId: msg.eventId, key: "\u{1f44d}")
-
-        #expect(mock.sendReactionCalls.count == 1)
-        #expect(mock.sendReactionCalls[0].roomId == "!room:example.com")
-        #expect(mock.sendReactionCalls[0].eventId == msg.eventId)
-        #expect(mock.sendReactionCalls[0].key == "\u{1f44d}")
+    @Test("Toggle reaction on a local echo (empty event ID) is a no-op")
+    mutating func toggleReactionEmptyEventIdIsNoOp() async {
+        await appState.toggleReaction(eventId: "", key: "\u{1f44d}")
+        #expect(mock.timelineToggleReactionCalls.isEmpty)
     }
 
-    @Test("Toggle reaction removes own existing reaction")
-    mutating func toggleReactionRemovesOwn() async {
-        let reaction = ReactionInfo(
-            eventId: "$r1:example.com",
-            key: "\u{1f44d}",
-            sender: "@alice:example.com"
-        )
-        let msg = makeMessage(reactions: [reaction])
-        appState.messages = [msg]
-
-        await appState.toggleReaction(eventId: msg.eventId, key: "\u{1f44d}")
-
-        #expect(appState.messages[0].reactions.isEmpty)
-        #expect(mock.redactReactionCalls.count == 1)
-        #expect(mock.redactReactionCalls[0].reactionEventId == "$r1:example.com")
-    }
-
-    @Test("Toggle reaction failure reverts optimistic add")
-    mutating func toggleReactionRevertsAddOnFailure() async {
-        mock.sendReactionError = ParlotteError.Room(message: "failed")
-        let msg = makeMessage()
-        appState.messages = [msg]
-
-        await appState.toggleReaction(eventId: msg.eventId, key: "\u{1f44d}")
-
-        #expect(appState.messages[0].reactions.isEmpty)
-        #expect(appState.errorMessage != nil)
-    }
-
-    @Test("Toggle reaction failure reverts optimistic remove")
-    mutating func toggleReactionRevertsRemoveOnFailure() async {
-        mock.redactReactionError = ParlotteError.Room(message: "failed")
-        let reaction = ReactionInfo(
-            eventId: "$r1:example.com",
-            key: "\u{1f44d}",
-            sender: "@alice:example.com"
-        )
-        let msg = makeMessage(reactions: [reaction])
-        appState.messages = [msg]
-
-        await appState.toggleReaction(eventId: msg.eventId, key: "\u{1f44d}")
-
-        #expect(appState.messages[0].reactions.count == 1)
-        #expect(appState.messages[0].reactions[0].eventId == "$r1:example.com")
+    @Test("Toggle reaction surfaces an error on failure")
+    mutating func toggleReactionSurfacesError() async {
+        mock.timelineToggleReactionError = ParlotteError.Room(message: "failed")
+        await appState.toggleReaction(eventId: "$msg:example.com", key: "\u{1f44d}")
         #expect(appState.errorMessage != nil)
     }
 
     @Test("Toggle reaction requires selected room")
     mutating func toggleReactionRequiresSelectedRoom() async {
         appState.selectedRoomId = nil
-        let msg = makeMessage()
-        appState.messages = [msg]
-
-        await appState.toggleReaction(eventId: msg.eventId, key: "\u{1f44d}")
-
-        #expect(mock.sendReactionCalls.isEmpty)
+        await appState.toggleReaction(eventId: "$msg:example.com", key: "\u{1f44d}")
+        #expect(mock.timelineToggleReactionCalls.isEmpty)
     }
 
     // MARK: - Profile
@@ -1139,36 +839,20 @@ struct AppStateTests {
         #expect(appState.rooms.first?.displayName == "Renamed")
     }
 
-    @Test("Sync update appends new messages when room has messages")
-    mutating func syncUpdateAppendsNewMessages() async {
-        appState.messages = [makeMessage(eventId: "$old:x.com", body: "Old")]
-        mock.messagesResult = MessageBatch(
-            messages: [
-                makeMessage(eventId: "$old:x.com", body: "Old"),
-                makeMessage(eventId: "$new:x.com", body: "New"),
-            ],
-            endToken: nil
-        )
-
-        await appState.handleSyncUpdate()
-
-        #expect(appState.messages.count == 2)
-        #expect(appState.messages.contains(where: { $0.eventId == "$new:x.com" }))
-    }
-
-    @Test("Sync update falls back to refreshMessages when room is empty")
-    mutating func syncUpdateFallsBackToRefreshForEmptyRoom() async {
-        appState.messages = []
-        mock.messagesResult = MessageBatch(
-            messages: [makeMessage(eventId: "$e1:x.com", body: "History")],
-            endToken: nil
-        )
-
-        await appState.handleSyncUpdate()
-
-        // refreshMessages populates from scratch (appendNewMessages bails on empty).
+    @Test("Sync update does not touch the message array (timeline owns it)")
+    mutating func syncUpdateLeavesMessagesToTimeline() async {
+        // Messages are driven exclusively by timeline snapshots now; a sync
+        // tick refreshes rooms/profiles but must not overwrite `messages`.
+        let snapshot = [makeMessage(eventId: "$a:x.com", body: "From timeline")]
+        appState.handleTimelineUpdate(roomId: "!room:example.com", messages: snapshot)
         #expect(appState.messages.count == 1)
-        #expect(appState.messages[0].body == "History")
+
+        // A sync tick whose room-list query returns nothing message-related
+        // leaves the timeline-provided messages intact.
+        await appState.handleSyncUpdate()
+
+        #expect(appState.messages.count == 1)
+        #expect(appState.messages[0].body == "From timeline")
     }
 
     // MARK: - Media cache eviction

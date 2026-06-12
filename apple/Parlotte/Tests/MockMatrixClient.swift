@@ -1,6 +1,48 @@
 import Foundation
 import ParlotteSDK
 
+extension MessageInfo {
+    /// Test convenience matching the pre-timeline field set. Defaults `itemId`
+    /// to the event ID and `sendState` to "" (a confirmed remote message), so
+    /// existing test constructions keep working without spelling out the
+    /// timeline-only fields.
+    init(
+        eventId: String,
+        sender: String,
+        body: String,
+        formattedBody: String?,
+        messageType: String,
+        timestampMs: UInt64,
+        isEdited: Bool,
+        repliedToEventId: String?,
+        mediaSource: String?,
+        mediaMimeType: String?,
+        mediaWidth: UInt32?,
+        mediaHeight: UInt32?,
+        mediaSize: UInt64?,
+        reactions: [ReactionInfo]
+    ) {
+        self.init(
+            itemId: eventId,
+            sendState: "",
+            eventId: eventId,
+            sender: sender,
+            body: body,
+            formattedBody: formattedBody,
+            messageType: messageType,
+            timestampMs: timestampMs,
+            isEdited: isEdited,
+            repliedToEventId: repliedToEventId,
+            mediaSource: mediaSource,
+            mediaMimeType: mediaMimeType,
+            mediaWidth: mediaWidth,
+            mediaHeight: mediaHeight,
+            mediaSize: mediaSize,
+            reactions: reactions
+        )
+    }
+}
+
 /// A mock MatrixClient for unit testing AppState state transitions.
 /// Methods record calls and return configurable results.
 ///
@@ -365,6 +407,69 @@ final class MockMatrixClient: MatrixClientProtocol, @unchecked Sendable {
     func setSessionChangeListener(_ listener: ParlotteSessionChangeListener) {}
     func startSync(listener: ParlotteSyncListener) throws {}
     var isSyncing: Bool { false }
+
+    // -- Timeline --
+
+    /// The listener handed to `startTimeline`, retained so tests can push
+    /// snapshots through `emitTimeline`.
+    var timelineListener: ParlotteTimelineListener?
+    var activeTimelineRoom: String?
+    var startTimelineCalls: [String] = []
+    var stopTimelineCalls = 0
+    /// Snapshot delivered synchronously when `startTimeline` is called.
+    var timelineInitialSnapshot: [MessageInfo] = []
+    var paginateTimelineBackCalls: [(roomId: String, numEvents: UInt16)] = []
+    /// Return value for `paginateTimelineBack` (true = reached start of room).
+    var paginateReachedStart = true
+    var timelineSendMessageCalls: [(roomId: String, body: String)] = []
+    var timelineSendReplyCalls: [(roomId: String, inReplyTo: String, body: String)] = []
+    var timelineToggleReactionCalls: [(roomId: String, targetEventId: String, key: String)] = []
+    var timelineSendMessageError: Error?
+    var timelineToggleReactionError: Error?
+
+    func startTimeline(roomId: String, listener: ParlotteTimelineListener) throws {
+        startTimelineCalls.append(roomId)
+        activeTimelineRoom = roomId
+        timelineListener = listener
+        listener.onTimelineUpdate(messages: timelineInitialSnapshot)
+    }
+
+    func stopTimeline() {
+        stopTimelineCalls += 1
+        activeTimelineRoom = nil
+        timelineListener = nil
+    }
+
+    func isTimelineActive(roomId: String) -> Bool {
+        activeTimelineRoom == roomId
+    }
+
+    /// Push a snapshot through the active timeline listener, as the real
+    /// timeline would on a change.
+    func emitTimeline(_ messages: [MessageInfo]) {
+        timelineListener?.onTimelineUpdate(messages: messages)
+    }
+
+    var paginateTimelineBackError: Error?
+    func paginateTimelineBack(roomId: String, numEvents: UInt16) async throws -> Bool {
+        try errorFor(paginateTimelineBackError)
+        paginateTimelineBackCalls.append((roomId, numEvents))
+        return paginateReachedStart
+    }
+
+    func timelineSendMessage(roomId: String, body: String) async throws {
+        try errorFor(timelineSendMessageError)
+        timelineSendMessageCalls.append((roomId, body))
+    }
+
+    func timelineSendReply(roomId: String, inReplyTo: String, body: String) async throws {
+        timelineSendReplyCalls.append((roomId, inReplyTo, body))
+    }
+
+    func timelineToggleReaction(roomId: String, targetEventId: String, key: String) async throws {
+        try errorFor(timelineToggleReactionError)
+        timelineToggleReactionCalls.append((roomId, targetEventId, key))
+    }
 
     func recoveryState() async -> RecoveryState {
         recoveryStateCalls += 1
