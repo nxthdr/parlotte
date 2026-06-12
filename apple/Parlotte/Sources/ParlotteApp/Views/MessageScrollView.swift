@@ -22,17 +22,24 @@ import SwiftUI
 struct MessageScrollView<Content: View>: View {
     let lastItemId: String?
     let firstItemId: String?
+    /// Height of any content shown *below* this scroll view (e.g. the typing
+    /// indicator). When it changes the viewport resizes; if the user was at the
+    /// bottom we re-scroll so the last message stays fully visible instead of
+    /// being clipped under the newly-appeared row.
+    let bottomInset: CGFloat
     let content: Content
     let onScrollToTop: (() -> Void)?
 
     init(
         lastItemId: String?,
         firstItemId: String?,
+        bottomInset: CGFloat = 0,
         onScrollToTop: (() -> Void)? = nil,
         @ViewBuilder content: () -> Content
     ) {
         self.lastItemId = lastItemId
         self.firstItemId = firstItemId
+        self.bottomInset = bottomInset
         self.onScrollToTop = onScrollToTop
         self.content = content()
     }
@@ -85,6 +92,10 @@ struct MessageScrollView<Content: View>: View {
                         )
                 }
             }
+            // Clip scroll content to the view's bounds. Without this the last
+            // message can draw past the bottom edge onto the sibling typing
+            // indicator below it ("bob is typing…" overlapping the message).
+            .clipped()
             .coordinateSpace(name: Self.coordSpace)
             .onAppear {
                 // Defer the initial jump until after SwiftUI lays out — calling
@@ -98,6 +109,17 @@ struct MessageScrollView<Content: View>: View {
                 // Only auto-scroll when the user was already near the bottom —
                 // never yank them out of scrollback to see something that just
                 // arrived.
+                guard isNearBottom else { return }
+                DispatchQueue.main.async {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(Self.bottomId, anchor: .bottom)
+                    }
+                }
+            }
+            .onChange(of: bottomInset) { _, _ in
+                // A row appeared/disappeared below us (typing indicator),
+                // shrinking/growing the viewport. Keep the bottom pinned so the
+                // last message doesn't get clipped under it.
                 guard isNearBottom else { return }
                 DispatchQueue.main.async {
                     withAnimation(.easeOut(duration: 0.2)) {

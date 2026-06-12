@@ -124,14 +124,20 @@ struct RoomDetailView: View {
             Divider()
                 .opacity(0.5)
 
-            // Message list
+            // Message list. Pin it to the available height so the ScrollView
+            // is unambiguously the flexible element; without this it can take
+            // its (tall) content height in some layout passes and overflow,
+            // drawing message content over the sibling typing indicator below.
             messageList
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            // Typing indicator
+            // Typing indicator (sibling below the list; the pinned list frame
+            // above keeps the scroll content from overflowing onto it).
             if !appState.currentRoomTypingUsers.isEmpty {
                 TypingIndicator(userIds: appState.currentRoomTypingUsers)
                     .padding(.horizontal, Spacing.lg)
                     .padding(.vertical, Spacing.xs)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             // Compose area
@@ -275,6 +281,9 @@ struct RoomDetailView: View {
         return MessageScrollView(
             lastItemId: visible.last?.eventId,
             firstItemId: visible.first?.eventId,
+            // Reserve the typing indicator's height so its appearance re-pins
+            // the bottom and doesn't clip the last message under it.
+            bottomInset: appState.currentRoomTypingUsers.isEmpty ? 0 : 28,
             onScrollToTop: {
                 if appState.hasMoreMessages && !appState.isLoadingMoreMessages {
                     Task { await appState.loadMoreMessages() }
