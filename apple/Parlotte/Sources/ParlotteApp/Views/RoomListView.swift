@@ -32,9 +32,9 @@ struct RoomListView: View {
                                     .lineLimit(1)
 
                                 Circle()
-                                    .fill(appState.isSyncActive ? AppColor.online : AppColor.offline)
+                                    .fill(connectionDotColor)
                                     .frame(width: 6, height: 6)
-                                    .help(appState.isSyncActive ? "Connected" : "Disconnected")
+                                    .help(connectionDotHelp)
                             }
                         }
 
@@ -73,11 +73,7 @@ struct RoomListView: View {
 
                 Section("Rooms") {
                     if rooms.isEmpty {
-                        if appState.hasCompletedInitialSync {
-                            Text("No rooms yet")
-                                .font(.roomPreview)
-                                .foregroundStyle(AppColor.textTertiary)
-                        } else {
+                        if appState.connectionState == .connecting {
                             // Initial /sync after login hasn't returned yet — the
                             // list is empty because we haven't received it, not
                             // because the account has no rooms.
@@ -87,6 +83,10 @@ struct RoomListView: View {
                                     .font(.roomPreview)
                                     .foregroundStyle(AppColor.textTertiary)
                             }
+                        } else {
+                            Text("No rooms yet")
+                                .font(.roomPreview)
+                                .foregroundStyle(AppColor.textTertiary)
                         }
                     } else {
                         ForEach(rooms, id: \.id) { room in
@@ -189,6 +189,24 @@ struct RoomListView: View {
             return String(userId[userId.index(after: colon)...])
         }
         return ""
+    }
+
+    // Sidebar connection dot, derived from the single `connectionState` rather
+    // than re-interpreting the raw sync flags.
+    private var connectionDotColor: Color {
+        switch appState.connectionState {
+        case .syncing: return AppColor.online
+        case .connecting, .checkingSession: return AppColor.connecting
+        case .offline, .loggedOut: return AppColor.offline
+        }
+    }
+
+    private var connectionDotHelp: String {
+        switch appState.connectionState {
+        case .syncing: return "Connected"
+        case .connecting, .checkingSession: return "Connecting…"
+        case .offline, .loggedOut: return "Disconnected"
+        }
     }
 }
 

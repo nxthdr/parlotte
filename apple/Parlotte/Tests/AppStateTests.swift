@@ -209,6 +209,29 @@ struct AppStateTests {
         #expect(mock.paginateTimelineBackCalls.isEmpty)
     }
 
+    // MARK: - Connection state
+
+    @Test("connectionState derives the connection phase from the sync flags")
+    mutating func connectionStateDerivation() {
+        appState.isCheckingSession = true
+        #expect(appState.connectionState == .checkingSession)
+
+        appState.isCheckingSession = false
+        appState.isLoggedIn = false
+        #expect(appState.connectionState == .loggedOut)
+
+        appState.isLoggedIn = true
+        appState.hasCompletedInitialSync = false
+        #expect(appState.connectionState == .connecting)
+
+        appState.hasCompletedInitialSync = true
+        appState.isSyncActive = true
+        #expect(appState.connectionState == .syncing)
+
+        appState.isSyncActive = false
+        #expect(appState.connectionState == .offline)
+    }
+
     // MARK: - Room Selection
 
     @Test("Selecting room clears messages and re-arms pagination")

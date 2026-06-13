@@ -83,6 +83,8 @@ enum AppColor {
             : NSColor(red: 0.20, green: 0.70, blue: 0.35, alpha: 1.0)
     })
     static let offline = Color.orange
+    /// Initial sync in progress (authenticated but not yet syncing).
+    static let connecting = Color.yellow
 }
 
 // MARK: - Typography

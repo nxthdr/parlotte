@@ -27,6 +27,32 @@ public final class AppState {
     /// misleading "No rooms yet". Reset on logout.
     public var hasCompletedInitialSync = false
 
+    /// The user-facing connection phase, as a single legible value the UI reads
+    /// instead of interpreting the raw flags itself. It is *derived* from those
+    /// flags (which remain the stored state) so there is one place that defines
+    /// what "connecting" vs "syncing" vs "offline" means — e.g. the sidebar dot
+    /// and the room-list placeholder both key off this rather than re-deriving
+    /// from `isSyncActive`/`hasCompletedInitialSync` independently.
+    public enum ConnectionState {
+        /// App launch: still restoring a saved session, outcome unknown.
+        case checkingSession
+        /// No session — the login screen is shown.
+        case loggedOut
+        /// Authenticated, but the initial `/sync` hasn't returned yet.
+        case connecting
+        /// Authenticated and the sync loop is running normally.
+        case syncing
+        /// Authenticated but the sync loop gave up after repeated failures.
+        case offline
+    }
+
+    public var connectionState: ConnectionState {
+        if isCheckingSession { return .checkingSession }
+        if !isLoggedIn { return .loggedOut }
+        if !hasCompletedInitialSync { return .connecting }
+        return isSyncActive ? .syncing : .offline
+    }
+
     // User profile
     public var displayName: String?
     public var avatarUrl: String?
@@ -326,26 +352,7 @@ public final class AppState {
             saveOidcSession(oidcData, homeserverURL: homeserverURL)
             self.loggedInUserId = session.userId
             password = ""
-            isLoggedIn = true
-            isSyncActive = true
-            // Tolerate a transient initial-sync failure (e.g. a slow/large
-            // first /sync that times out): it must NOT skip startSyncLoop, or
-            // the user is stranded "connecting" with no running sync. Only an
-            // auth error is fatal. The persistent loop then drives sync.
-            do {
-                try await client.syncOnce()
-            } catch {
-                if error.isAuthError { throw error }
-            }
-            await fetchProfile()
-            await refreshIgnoredUsers()
-            await refreshRecoveryState()
-            if recoveryState == .incomplete {
-                isPromptingRecoveryEntry = true
-            }
-            await refreshRooms()
-            hasCompletedInitialSync = true
-            startSyncLoop()
+            try await enterAuthenticatedState()
         } catch {
             errorMessage = error.displayMessage
         }
@@ -367,29 +374,39 @@ public final class AppState {
             self.client = client
             self.loggedInUserId = session?.userId
             password = ""
-            isLoggedIn = true
-            isSyncActive = true
-            // Tolerate a transient initial-sync failure so it can't skip
-            // startSyncLoop (which would strand the user "connecting").
-            do {
-                try await client.syncOnce()
-            } catch {
-                if error.isAuthError { throw error }
-            }
-            await fetchProfile()
-            await refreshIgnoredUsers()
-            await refreshRecoveryState()
-            if recoveryState == .incomplete {
-                isPromptingRecoveryEntry = true
-            }
-            await refreshRooms()
-            hasCompletedInitialSync = true
-            startSyncLoop()
+            try await enterAuthenticatedState()
         } catch {
             errorMessage = error.displayMessage
         }
 
         isLoading = false
+    }
+
+    /// Shared post-authentication bring-up, invoked by every login and restore
+    /// path once a `client` has been built and its session established (and
+    /// assigned to `self.client`). Runs the initial sync — tolerating a
+    /// transient/offline failure so it never skips `startSyncLoop`, but
+    /// rethrowing an auth error so the caller can surface it / clear the saved
+    /// session — then loads profile, ignored users, recovery and room state,
+    /// and starts the persistent sync loop. Centralising this here is what lets
+    /// the four entry points stay thin and consistent.
+    private func enterAuthenticatedState() async throws {
+        isLoggedIn = true
+        isSyncActive = true
+        do {
+            try await client?.syncOnce()
+        } catch {
+            if error.isAuthError { throw error }
+        }
+        await fetchProfile()
+        await refreshIgnoredUsers()
+        await refreshRecoveryState()
+        if recoveryState == .incomplete {
+            isPromptingRecoveryEntry = true
+        }
+        await refreshRooms()
+        hasCompletedInitialSync = true
+        startSyncLoop()
     }
 
     public func restoreSession() async {
@@ -416,28 +433,11 @@ public final class AppState {
             self.loggedInUserId = saved.userId
             isCheckingSession = false
 
-            // A failed initial sync must not invalidate the session: being
-            // offline at launch is not the same as a bad token. Only an auth
-            // error means the saved credentials are actually unusable; any
-            // other failure brings the user in against the local store and
-            // lets the persistent sync loop reconnect.
-            do {
-                try await client.syncOnce()
-            } catch {
-                if error.isAuthError { throw error }
-            }
-
-            isLoggedIn = true
-            isSyncActive = true
-            await fetchProfile()
-            await refreshIgnoredUsers()
-            await refreshRecoveryState()
-            if recoveryState == .incomplete {
-                isPromptingRecoveryEntry = true
-            }
-            await refreshRooms()
-            hasCompletedInitialSync = true
-            startSyncLoop()
+            // Bring the session up. A failed initial sync must not invalidate
+            // the session (offline at launch != bad token) — enterAuthenticated
+            // State tolerates that and only rethrows a genuine auth error, which
+            // the catch below treats as unusable saved credentials.
+            try await enterAuthenticatedState()
         } catch {
             isCheckingSession = false
             guard error.isAuthError else {
@@ -447,9 +447,12 @@ public final class AppState {
                 self.client = nil
                 return
             }
+            // Bad token: discard the saved session and reset to logged-out
+            // (the helper may already have flipped isLoggedIn on before the
+            // auth error surfaced).
             clearSavedSession()
             clearStore()
-            self.client = nil
+            resetInMemorySessionState()
         }
     }
 
@@ -471,23 +474,7 @@ public final class AppState {
 
             // As in restoreSession: tolerate a transient initial-sync failure
             // (offline launch) and only discard the session on an auth error.
-            do {
-                try await client.syncOnce()
-            } catch {
-                if error.isAuthError { throw error }
-            }
-
-            isLoggedIn = true
-            isSyncActive = true
-            await fetchProfile()
-            await refreshIgnoredUsers()
-            await refreshRecoveryState()
-            if recoveryState == .incomplete {
-                isPromptingRecoveryEntry = true
-            }
-            await refreshRooms()
-            hasCompletedInitialSync = true
-            startSyncLoop()
+            try await enterAuthenticatedState()
         } catch {
             isCheckingSession = false
             guard error.isAuthError else {
@@ -497,7 +484,7 @@ public final class AppState {
             clearSavedOidcSession()
             clearSavedSession()
             clearStore()
-            self.client = nil
+            resetInMemorySessionState()
         }
     }
 
