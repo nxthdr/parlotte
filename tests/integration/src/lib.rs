@@ -1576,10 +1576,22 @@ mod tests {
             m.iter().any(|x| x.body.starts_with("msg "))
         });
 
-        // Back-paginating a small room returns true (start of room reached) and
-        // must not error.
-        let reached_start = alice.paginate_timeline_back(&room_id, 50).unwrap();
-        assert!(reached_start, "a small room should reach the start");
+        // Live back-pagination is lazy: the first call is served from the
+        // cache and reports "not at start" even on a tiny room; a later call
+        // actually paginates and reports hitting the start. This mirrors the
+        // app's scroll-to-load (hasMoreMessages stays true until a paginate
+        // confirms the start). Loop, bounded, until it reports the start.
+        let mut reached_start = false;
+        for _ in 0..6 {
+            reached_start = alice.paginate_timeline_back(&room_id, 50).unwrap();
+            if reached_start {
+                break;
+            }
+        }
+        assert!(
+            reached_start,
+            "repeated back-pagination should reach the start of a small room"
+        );
 
         let snap = collector.snapshot();
         assert!(

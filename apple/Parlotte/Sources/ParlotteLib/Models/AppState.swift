@@ -21,6 +21,11 @@ public final class AppState {
     public var errorMessage: String?
     public var loggedInUserId: String?
     public var isSyncActive = false
+    /// True once the first sync response has been processed since login. Until
+    /// then the room list is genuinely empty (the initial `/sync` hasn't
+    /// returned yet), so the UI shows a "connecting" state rather than the
+    /// misleading "No rooms yet". Reset on logout.
+    public var hasCompletedInitialSync = false
 
     // User profile
     public var displayName: String?
@@ -323,7 +328,15 @@ public final class AppState {
             password = ""
             isLoggedIn = true
             isSyncActive = true
-            try await client.syncOnce()
+            // Tolerate a transient initial-sync failure (e.g. a slow/large
+            // first /sync that times out): it must NOT skip startSyncLoop, or
+            // the user is stranded "connecting" with no running sync. Only an
+            // auth error is fatal. The persistent loop then drives sync.
+            do {
+                try await client.syncOnce()
+            } catch {
+                if error.isAuthError { throw error }
+            }
             await fetchProfile()
             await refreshIgnoredUsers()
             await refreshRecoveryState()
@@ -331,6 +344,7 @@ public final class AppState {
                 isPromptingRecoveryEntry = true
             }
             await refreshRooms()
+            hasCompletedInitialSync = true
             startSyncLoop()
         } catch {
             errorMessage = error.displayMessage
@@ -355,7 +369,13 @@ public final class AppState {
             password = ""
             isLoggedIn = true
             isSyncActive = true
-            try await client.syncOnce()
+            // Tolerate a transient initial-sync failure so it can't skip
+            // startSyncLoop (which would strand the user "connecting").
+            do {
+                try await client.syncOnce()
+            } catch {
+                if error.isAuthError { throw error }
+            }
             await fetchProfile()
             await refreshIgnoredUsers()
             await refreshRecoveryState()
@@ -363,6 +383,7 @@ public final class AppState {
                 isPromptingRecoveryEntry = true
             }
             await refreshRooms()
+            hasCompletedInitialSync = true
             startSyncLoop()
         } catch {
             errorMessage = error.displayMessage
@@ -415,6 +436,7 @@ public final class AppState {
                 isPromptingRecoveryEntry = true
             }
             await refreshRooms()
+            hasCompletedInitialSync = true
             startSyncLoop()
         } catch {
             isCheckingSession = false
@@ -464,6 +486,7 @@ public final class AppState {
                 isPromptingRecoveryEntry = true
             }
             await refreshRooms()
+            hasCompletedInitialSync = true
             startSyncLoop()
         } catch {
             isCheckingSession = false
@@ -505,6 +528,7 @@ public final class AppState {
         client?.stopTimeline()
         client?.stopSync()
         isSyncActive = false
+        hasCompletedInitialSync = false
         client = nil
         isLoggedIn = false
         loggedInUserId = nil
@@ -1356,6 +1380,9 @@ public final class AppState {
         await refreshVerificationState()
         await refreshIgnoredUsers()
         await refreshRooms()
+        // The first tick has now populated the room list from the initial
+        // /sync; the UI can stop showing the "connecting" placeholder.
+        hasCompletedInitialSync = true
         if selectedRoomId != nil {
             // Pick up member profile changes (e.g., other users updating avatars)
             await refreshMemberProfiles()

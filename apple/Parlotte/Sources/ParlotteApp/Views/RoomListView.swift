@@ -73,9 +73,21 @@ struct RoomListView: View {
 
                 Section("Rooms") {
                     if rooms.isEmpty {
-                        Text("No rooms yet")
-                            .font(.roomPreview)
-                            .foregroundStyle(AppColor.textTertiary)
+                        if appState.hasCompletedInitialSync {
+                            Text("No rooms yet")
+                                .font(.roomPreview)
+                                .foregroundStyle(AppColor.textTertiary)
+                        } else {
+                            // Initial /sync after login hasn't returned yet — the
+                            // list is empty because we haven't received it, not
+                            // because the account has no rooms.
+                            HStack(spacing: Spacing.sm) {
+                                ProgressView().controlSize(.small)
+                                Text("Connecting…")
+                                    .font(.roomPreview)
+                                    .foregroundStyle(AppColor.textTertiary)
+                            }
+                        }
                     } else {
                         ForEach(rooms, id: \.id) { room in
                             roomRow(room)

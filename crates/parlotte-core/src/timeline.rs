@@ -111,18 +111,13 @@ impl TimelineManager {
                 message: format!("failed to build timeline: {e}"),
             })?);
 
-            // Load a screenful of recent history up front. The event cache only
-            // holds events seen since it was subscribed, so a freshly-opened
-            // room can otherwise start empty; an initial back-pagination fetches
-            // recent messages so the timeline isn't blank. Best-effort: ignore
-            // errors (e.g. transient network) — live events and later
-            // pagination still fill in.
-            let _ = timeline.paginate_backwards(30).await;
-
-            // `subscribe` returns the current items plus a stream of subsequent
-            // diff batches. Emit the initial snapshot now so the UI has content
-            // before the first diff arrives, then keep a local mirror and emit
-            // a fresh snapshot after applying each batch.
+            // Subscribe and emit whatever the (persistent, sync-fed) event cache
+            // already holds *immediately*, so opening a room paints instantly
+            // with cached messages. We deliberately do NOT trigger a network
+            // back-pagination here: this call runs synchronously when the room
+            // is selected, so a round-trip would block room-open (the cold-start
+            // lag). Older history loads on scroll via `paginate_back`, and live
+            // events stream in through the diff loop below.
             let (initial, stream) = timeline.subscribe().await;
             listener.on_timeline_update(snapshot(&initial));
 

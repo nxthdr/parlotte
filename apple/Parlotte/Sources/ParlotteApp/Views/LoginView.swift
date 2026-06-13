@@ -162,6 +162,18 @@ struct LoginView: View {
         }
         .padding(40)
         .frame(minWidth: 400, minHeight: 400)
+        .task {
+            // Evaluate a pre-filled homeserver URL (restored from a previous
+            // session) on appear, so SSO/OIDC is detected without the user
+            // having to edit the field. `onChange` only fires on edits, which is
+            // why a pre-filled URL otherwise stayed stuck on the password form.
+            // No debounce here — the value is already settled.
+            let url = appState.homeserverURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard url.hasPrefix("http://") || url.hasPrefix("https://"),
+                  url != lastDetectedURL else { return }
+            lastDetectedURL = url
+            await appState.detectLoginMethods()
+        }
     }
 
     private func scheduleDetection() {
