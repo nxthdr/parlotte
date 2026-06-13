@@ -11,6 +11,7 @@ struct MemberListView: View {
     @State private var pendingBan: RoomMemberInfo?
     @State private var pendingIgnore: RoomMemberInfo?
     @State private var actionInFlight = false
+    @State private var showInvite = false
 
     let roomId: String
 
@@ -22,10 +23,38 @@ struct MemberListView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Members")
-                    .font(.system(size: 16, weight: .semibold))
+                if showInvite {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) { showInvite = false }
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 14, weight: .semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Back to members")
+
+                    Text("Invite User")
+                        .font(.system(size: 16, weight: .semibold))
+                } else {
+                    Text("Members")
+                        .font(.system(size: 16, weight: .semibold))
+                }
 
                 Spacer()
+
+                if !showInvite {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) { showInvite = true }
+                    } label: {
+                        Label("Invite", systemImage: "person.badge.plus")
+                            .font(.system(size: 13, weight: .medium))
+                            .padding(.horizontal, Spacing.sm)
+                            .padding(.vertical, Spacing.xs)
+                            .background(AppColor.surfaceHover, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Invite a user to this room")
+                }
 
                 Button("Done") { dismiss() }
                     .buttonStyle(.plain)
@@ -35,7 +64,17 @@ struct MemberListView: View {
             Divider()
                 .opacity(0.5)
 
-            if isLoading {
+            if showInvite {
+                UserSearchPicker(placeholder: "Search by name or @user:server") { userId in
+                    Task {
+                        await appState.inviteUser(userId: userId)
+                        await loadMembers()
+                    }
+                    withAnimation(.easeInOut(duration: 0.15)) { showInvite = false }
+                }
+                .padding(Spacing.lg)
+                .environment(appState)
+            } else if isLoading {
                 Spacer()
                 ProgressView()
                 Spacer()
@@ -53,7 +92,7 @@ struct MemberListView: View {
                 .listStyle(.plain)
             }
         }
-        .frame(minWidth: 350, minHeight: 300)
+        .frame(minWidth: 350, minHeight: 380)
         .task {
             await loadMembers()
         }

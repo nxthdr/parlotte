@@ -7,7 +7,6 @@ import UniformTypeIdentifiers
 struct RoomDetailView: View {
     @Environment(AppState.self) private var appState
     @State private var messageText = ""
-    @State private var showInvite = false
     @State private var showLeaveConfirm = false
     @State private var showMembers = false
     @State private var showSettings = false
@@ -64,9 +63,6 @@ struct RoomDetailView: View {
                     Menu {
                         Button { showSettings = true } label: {
                             Label("Room Settings", systemImage: "gearshape")
-                        }
-                        Button { showInvite = true } label: {
-                            Label("Invite User", systemImage: "person.badge.plus")
                         }
                         Divider()
                         Button(role: .destructive) { showLeaveConfirm = true } label: {
@@ -228,28 +224,6 @@ struct RoomDetailView: View {
                 .padding(.bottom, Spacing.md)
                 .padding(.top, Spacing.sm)
             }
-        }
-        .sheet(isPresented: $showInvite) {
-            VStack(spacing: 0) {
-                HStack {
-                    Text("Invite User")
-                        .font(.system(size: 16, weight: .semibold))
-                    Spacer()
-                    Button("Done") { showInvite = false }
-                        .buttonStyle(.plain)
-                }
-                .padding(Spacing.lg)
-
-                Divider().opacity(0.5)
-
-                UserSearchPicker(placeholder: "Search by name or @user:server") { userId in
-                    Task { await appState.inviteUser(userId: userId) }
-                    showInvite = false
-                }
-                .padding(Spacing.lg)
-            }
-            .frame(minWidth: 360, minHeight: 380)
-            .environment(appState)
         }
         .sheet(isPresented: $showMembers) {
             if let roomId = appState.selectedRoomId {

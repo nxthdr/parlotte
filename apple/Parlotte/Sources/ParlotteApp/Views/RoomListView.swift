@@ -97,6 +97,11 @@ struct RoomListView: View {
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
+            // Without a top inset the first section header ("Direct messages")
+            // renders flush against the divider above and gets clipped under the
+            // scroll view's top edge on initial appearance. A small margin keeps
+            // it visible.
+            .contentMargins(.top, Spacing.sm, for: .scrollContent)
 
             Divider()
                 .opacity(0.3)
