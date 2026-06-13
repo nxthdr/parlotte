@@ -82,6 +82,11 @@ pub struct RoomInfo {
     pub topic: Option<String>,
     pub is_invited: bool,
     pub unread_count: u64,
+    /// Timestamp (ms since the Unix epoch) of the room's latest known event.
+    /// `None` when no event is known yet. The room list is returned sorted
+    /// most-recent-first using this value.
+    #[uniffi(default = None)]
+    pub last_activity_ts: Option<u64>,
 }
 
 impl From<CoreRoomInfo> for RoomInfo {
@@ -95,6 +100,7 @@ impl From<CoreRoomInfo> for RoomInfo {
             topic: r.topic,
             is_invited: r.is_invited,
             unread_count: r.unread_count,
+            last_activity_ts: r.last_activity_ts,
         }
     }
 }
@@ -1007,6 +1013,7 @@ mod tests {
             topic: Some("Welcome".into()),
             is_invited: false,
             unread_count: 42,
+            last_activity_ts: Some(1_700_000_000_000),
         };
         let ffi: RoomInfo = core.into();
         assert_eq!(ffi.id, "!room:example.com");
@@ -1017,6 +1024,7 @@ mod tests {
         assert_eq!(ffi.topic.as_deref(), Some("Welcome"));
         assert!(!ffi.is_invited);
         assert_eq!(ffi.unread_count, 42);
+        assert_eq!(ffi.last_activity_ts, Some(1_700_000_000_000));
     }
 
     #[test]
@@ -1030,12 +1038,14 @@ mod tests {
             topic: None,
             is_invited: true,
             unread_count: 0,
+            last_activity_ts: None,
         };
         let ffi: RoomInfo = core.into();
         assert!(ffi.topic.is_none());
         assert!(ffi.is_public);
         assert!(ffi.is_direct);
         assert!(ffi.is_invited);
+        assert!(ffi.last_activity_ts.is_none());
     }
 
     // -- MessageInfo round-trip --

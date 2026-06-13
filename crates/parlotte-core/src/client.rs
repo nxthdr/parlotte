@@ -663,6 +663,7 @@ impl ParlotteClient {
                     topic,
                     is_invited: false,
                     unread_count,
+                    last_activity_ts: room.latest_event_timestamp().map(|ts| ts.0.into()),
                 });
             }
 
@@ -691,9 +692,11 @@ impl ParlotteClient {
                     topic,
                     is_invited: true,
                     unread_count: 0,
+                    last_activity_ts: room.latest_event_timestamp().map(|ts| ts.0.into()),
                 });
             }
 
+            crate::room::sort_rooms_by_recency(&mut rooms);
             Ok(rooms)
         })
     }

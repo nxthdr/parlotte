@@ -17,6 +17,24 @@ pub struct RoomInfo {
     pub is_invited: bool,
     /// Number of unread notifications in this room.
     pub unread_count: u64,
+    /// Timestamp (ms since the Unix epoch) of the room's latest known event,
+    /// used to order the room list most-recent-first. `None` when no event is
+    /// known yet (e.g. a fresh invite, or a room not yet hydrated).
+    pub last_activity_ts: Option<u64>,
+}
+
+/// Sort the room list for display: pending invites first (above everything
+/// else), then the remaining rooms most-recent-activity first. Rooms with an
+/// unknown last-event timestamp sort last within their group; ties break on
+/// room ID so the order is stable across refreshes.
+pub(crate) fn sort_rooms_by_recency(rooms: &mut [RoomInfo]) {
+    rooms.sort_by(|a, b| {
+        // `is_invited` true sorts before false.
+        b.is_invited
+            .cmp(&a.is_invited)
+            .then_with(|| b.last_activity_ts.cmp(&a.last_activity_ts))
+            .then_with(|| a.id.cmp(&b.id))
+    });
 }
 
 /// Summary of a room from the public directory.
@@ -75,6 +93,7 @@ mod tests {
             topic: Some("A topic".into()),
             is_invited: false,
             unread_count: 0,
+            last_activity_ts: Some(1_000),
         };
         assert_eq!(room.id, "!abc:example.com");
         assert_eq!(room.display_name, "Test Room");
@@ -96,6 +115,7 @@ mod tests {
             topic: None,
             is_invited: false,
             unread_count: 0,
+            last_activity_ts: None,
         };
         assert!(!room.is_encrypted);
         assert!(room.is_public);
@@ -114,9 +134,74 @@ mod tests {
             topic: None,
             is_invited: false,
             unread_count: 0,
+            last_activity_ts: None,
         };
         let cloned = room.clone();
         assert_eq!(room.id, cloned.id);
         assert_eq!(room.display_name, cloned.display_name);
+    }
+
+    fn room_with(id: &str, last_activity_ts: Option<u64>) -> RoomInfo {
+        room_full(id, last_activity_ts, false)
+    }
+
+    fn room_full(id: &str, last_activity_ts: Option<u64>, is_invited: bool) -> RoomInfo {
+        RoomInfo {
+            id: id.into(),
+            display_name: id.into(),
+            is_encrypted: false,
+            is_public: false,
+            is_direct: false,
+            topic: None,
+            is_invited,
+            unread_count: 0,
+            last_activity_ts,
+        }
+    }
+
+    #[test]
+    fn sort_orders_most_recent_first_with_unknown_last() {
+        let mut rooms = vec![
+            room_with("!old:x", Some(100)),
+            room_with("!none:x", None),
+            room_with("!new:x", Some(300)),
+            room_with("!mid:x", Some(200)),
+        ];
+        sort_rooms_by_recency(&mut rooms);
+        let order: Vec<&str> = rooms.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(order, ["!new:x", "!mid:x", "!old:x", "!none:x"]);
+    }
+
+    #[test]
+    fn sort_breaks_ties_by_id_for_stability() {
+        let mut rooms = vec![
+            room_with("!b:x", Some(100)),
+            room_with("!a:x", Some(100)),
+            room_with("!d:x", None),
+            room_with("!c:x", None),
+        ];
+        sort_rooms_by_recency(&mut rooms);
+        let order: Vec<&str> = rooms.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(order, ["!a:x", "!b:x", "!c:x", "!d:x"]);
+    }
+
+    #[test]
+    fn sort_pins_invites_above_everything_else() {
+        // A very-recent joined room must still sort below any invite, even an
+        // invite with no known last-event timestamp.
+        let mut rooms = vec![
+            room_with("!recent:x", Some(9_999)),
+            room_full("!invite-b:x", Some(100), true),
+            room_with("!old:x", Some(50)),
+            room_full("!invite-a:x", None, true),
+        ];
+        sort_rooms_by_recency(&mut rooms);
+        let order: Vec<&str> = rooms.iter().map(|r| r.id.as_str()).collect();
+        // Invites first (most-recent invite first, unknown-ts invite last),
+        // then joined rooms by recency.
+        assert_eq!(
+            order,
+            ["!invite-b:x", "!invite-a:x", "!recent:x", "!old:x"]
+        );
     }
 }
