@@ -57,6 +57,10 @@ Structure:
 
 ## Development Commands
 
+A root `Makefile` wraps the common flows — run `make help` to list targets
+(`make run`, `make pair`, `make test`, `make app`, …). The raw commands below
+are what those targets invoke.
+
 ```bash
 # Build everything (Rust)
 cargo build
@@ -73,8 +77,16 @@ KEEP_RUNNING=1 ./scripts/run-integration-tests.sh --test-threads=1
 # Build Apple XCFramework + Swift bindings
 ./scripts/build-apple.sh
 
+# Build a real Parlotte.app bundle (needed for notifications/keychain;
+# `swift run` is fine for everything else)
+./scripts/build-app.sh
+
 # Build and run macOS app
 cd apple/Parlotte && swift run Parlotte
+
+# Spin up local Synapse (Docker) and register alice + bob for
+# multi-instance testing. `make pair` does this and launches both apps.
+./scripts/create-test-users.sh
 
 # Run with a named profile (for multi-instance testing)
 cd apple/Parlotte && swift run Parlotte --profile alice
@@ -85,6 +97,37 @@ cd apple/Parlotte && swift run Parlotte --debug
 # Run Swift state management tests (no Xcode required)
 cd apple/Parlotte && swift run TestRunner
 ```
+
+> The generated Apple bindings (`apple/ParlotteSDK/RustFramework/`,
+> `Sources/ParlotteFFI/`, `Sources/ParlotteFFIHeaders/`) are build artifacts and
+> are **gitignored** — regenerate them with `./scripts/build-apple.sh` (or
+> `make bindings`). FFI changes won't appear in `git status`; only the Rust
+> sources are tracked.
+
+## Releasing to TestFlight
+
+macOS builds go to TestFlight (and eventually the App Store) via two scripts,
+wrapped by `make archive` / `make upload` / `make release`.
+
+1. **Bump the build number.** Increment `CURRENT_PROJECT_VERSION` in
+   `apple/Parlotte/project.yml` and note what changed in the comment above it.
+   App Store Connect **rejects duplicate build numbers**, so every upload needs
+   a higher one (the marketing version `MARKETING_VERSION` only changes for a
+   real release).
+2. **Archive** — `make archive` (`scripts/archive.sh`): builds the release Rust
+   lib + bindings, regenerates the Xcode project, archives `arm64`-only, and
+   exports a signed `build/export/Parlotte.pkg`. Uses automatic signing via
+   `DEVELOPMENT_TEAM` from the gitignored `apple/Parlotte/Config.xcconfig`;
+   Xcode must be signed into the matching Apple ID.
+3. **Upload** — `make upload` (`scripts/upload.sh`): validates and uploads the
+   `.pkg` with an App Store Connect API key (no Apple ID password). Reads
+   `ASC_KEY_ID` / `ASC_ISSUER_ID` from the gitignored
+   `apple/Parlotte/AppStoreConnect.local`, with the `.p8` key in
+   `~/.appstoreconnect/private_keys/`.
+
+`make release` runs both in sequence. The build appears under Parlotte →
+TestFlight → macOS Builds after ~10–20 min of processing. One-time credential
+setup is documented at the top of `scripts/upload.sh`.
 
 ## Testing Philosophy
 

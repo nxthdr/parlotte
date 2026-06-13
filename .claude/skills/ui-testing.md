@@ -149,8 +149,8 @@ ax click-text "Load older messages"
 # Wait for a specific message to appear after sync
 ax wait-for "Deploy succeeded" 10
 
-# Keyboard shortcuts
-ax press cmd+k          # command palette
+# Keyboard shortcuts (modifiers: cmd / shift / ctrl / alt)
+ax press cmd+,           # e.g. a chorded shortcut
 ax press escape          # dismiss modal
 ax press return          # submit (single-line fields only)
 ```

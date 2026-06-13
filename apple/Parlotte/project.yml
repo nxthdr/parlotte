@@ -27,8 +27,8 @@ settings:
     # Build number — must increase for every TestFlight/App Store upload of the
     # same marketing version. 11 = matrix-sdk Timeline migration + typing-row
     # spacing fix. 12 = Apple-Silicon-only + stripped build (install size cut
-    # from ~216 MB to ~90 MB).
-    CURRENT_PROJECT_VERSION: "12"
+    # from ~216 MB to ~90 MB). 13 = room list sorted by recency (invites pinned).
+    CURRENT_PROJECT_VERSION: "13"
     CODE_SIGN_STYLE: Automatic
     ENABLE_HARDENED_RUNTIME: YES
     # Apple Silicon only. The statically-linked Rust core is large, so shipping
