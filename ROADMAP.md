@@ -6,7 +6,7 @@
 - [x] Multi-profile support (`--profile` flag for testing)
 - [x] Debug logging (`--debug` flag)
 - [x] Background sync (persistent connection instead of 5s polling)
-- [ ] Sliding Sync (performance at scale)
+- [ ] Adopt `matrix-sdk-ui` `SyncService` + `RoomListService` (Simplified Sliding Sync, MSC4186) — near-instant startup at scale; replaces the manual `/sync` loop (`sync.rs`) and our hand-rolled room enumeration + recency sort (`client.rs::rooms` / `room.rs::sort_rooms_by_recency`)
 
 ## Rooms
 - [x] Room list with public/private/encrypted indicators

@@ -190,7 +190,7 @@ corresponding roadmap update create drift between intent and reality.
 |---|---|---|
 | Matrix SDK | `matrix-sdk` 0.18 | Official Rust SDK, actively maintained, used by Element X |
 | Message handling | `matrix-sdk-ui` `Timeline` | Snapshot-driven UI: SDK merges local echoes, edits, redactions, reactions, UTD-retry and pagination — far less custom reconciliation than the raw `/messages` API |
-| Sync strategy | Standard `/sync` | Simpler starting point; migrate to Sliding Sync later for perf |
+| Sync strategy | Standard `/sync` | Simpler starting point. Migration target for scale is `matrix-sdk-ui` `SyncService` + `RoomListService` (Simplified Sliding Sync, MSC4186 — native, no proxy), which would also supersede the manual sync loop and the hand-rolled room list + recency sort |
 | FFI | UniFFI proc-macros | No UDL duplication, native async support, maintained by Mozilla |
 | Storage | SQLite via `matrix-sdk-sqlite` | Persistent, performant, works on all platforms |
 | Async runtime | tokio, owned by `ParlotteClient` | `matrix-sdk` requires tokio; embedding the runtime simplifies FFI |
