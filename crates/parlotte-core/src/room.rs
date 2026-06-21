@@ -199,9 +199,6 @@ mod tests {
         let order: Vec<&str> = rooms.iter().map(|r| r.id.as_str()).collect();
         // Invites first (most-recent invite first, unknown-ts invite last),
         // then joined rooms by recency.
-        assert_eq!(
-            order,
-            ["!invite-b:x", "!invite-a:x", "!recent:x", "!old:x"]
-        );
+        assert_eq!(order, ["!invite-b:x", "!invite-a:x", "!recent:x", "!old:x"]);
     }
 }
